@@ -1,8 +1,0 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp" android:height="108dp"
-    android:viewportWidth="108" android:viewportHeight="108">
-    <!-- Simple router glyph placeholder — swap for a real brand mark before release. -->
-    <path android:fillColor="#FFFFFF" android:pathData="M34,44 h40 v20 h-40 z" />
-    <path android:fillColor="#FFFFFF" android:pathData="M50,64 L50,80 M58,64 L58,80" android:strokeColor="#FFFFFF" android:strokeWidth="4" />
-    <path android:fillColor="#FFFFFF" android:pathData="M44,30 L54,44 M64,30 L54,44" android:strokeColor="#FFFFFF" android:strokeWidth="4" />
-</vector>
