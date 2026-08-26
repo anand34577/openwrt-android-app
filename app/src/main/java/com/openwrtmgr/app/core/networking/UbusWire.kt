@@ -45,3 +45,14 @@ object UbusStatus {
     const val OK = 0
     const val PERMISSION_DENIED = 6
 }
+
+/**
+ * uhttpd-mod-ubus's own JSON-RPC-level error code for "this session id is invalid/expired" —
+ * returned in the top-level `error` field, before the request ever reaches ubus, distinct from
+ * [UbusStatus.PERMISSION_DENIED] which comes back embedded in an otherwise-successful response.
+ * Session expiry (procd's ~300s idle timeout) can show up either way depending on timing.
+ */
+const val UBUS_RPC_ACCESS_DENIED = -32002
+
+/** Internal signal from [UbusHttpClient]'s `post()` that the session needs a re-login — never escapes the class. */
+internal class UbusSessionExpiredException : Exception()

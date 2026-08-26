@@ -2,6 +2,7 @@ package com.openwrtmgr.app.feature.router
 
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Dashboard
@@ -16,6 +17,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -38,8 +40,11 @@ fun RouterHomeScreen(
     onOpenUciEditor: () -> Unit,
     onOpenDnsManagement: () -> Unit,
     onOpenBackupRestore: () -> Unit,
+    onSwitchRouter: () -> Unit,
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
+    val profiles by repository.observeProfiles().collectAsState(initial = emptyList())
+    val routerName = profiles.firstOrNull { it.id == profileId }?.name ?: "this router"
     val tabs = listOf(
         Tab("Dashboard", Icons.Default.Dashboard),
         Tab("Devices", Icons.Default.Devices),
@@ -49,6 +54,11 @@ fun RouterHomeScreen(
     )
 
     Scaffold(
+        // Every tab below owns its own Scaffold+TopAppBar (which already reserves the status-bar
+        // inset). Scaffold's default contentWindowInsets is WindowInsets.systemBars regardless of
+        // whether a topBar is provided — without zeroing it here, the status-bar gap gets reserved
+        // twice (once here, once by each tab), showing as a big empty band under the status bar.
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             NavigationBar {
                 tabs.forEachIndexed { index, tab ->
@@ -70,10 +80,12 @@ fun RouterHomeScreen(
                     2 -> FirewallScreen(repository, profileId)
                     3 -> SystemScreen(repository, profileId)
                     else -> MoreScreen(
+                        routerName = routerName,
                         onOpenDiagnostics = onOpenDiagnostics,
                         onOpenUciEditor = onOpenUciEditor,
                         onOpenDnsManagement = onOpenDnsManagement,
                         onOpenBackupRestore = onOpenBackupRestore,
+                        onSwitchRouter = onSwitchRouter,
                     )
                 }
             }

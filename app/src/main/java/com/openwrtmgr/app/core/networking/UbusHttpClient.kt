@@ -174,8 +174,12 @@ class UbusHttpClient(
     }.recoverCatching { throw it.toOpenWrtException() }
 
     override suspend fun getClients(): Result<List<Client>> = runCatching {
-        val leases = getDhcpLeases().getOrDefault(emptyList())
-        val associations = getWifiAssociations().getOrDefault(emptyList())
+        // getDhcpLeases()/getWifiAssociations() already treat an unsupported ubus object (missing
+        // ACL, no dnsmasq, no iwinfo) as a successful empty list — a real *thrown* failure here
+        // (auth, network, unexpected response) is a genuine problem and must not be swallowed into
+        // a silent "no devices found", or a session-expiry looks identical to an empty network.
+        val leases = getDhcpLeases().getOrThrow()
+        val associations = getWifiAssociations().getOrThrow()
         mergeClients(leases, associations)
     }.recoverCatching { throw it.toOpenWrtException() }
 
@@ -387,6 +391,12 @@ class UbusHttpClient(
     override suspend fun getInstalledPackages(): Result<List<Package>> = runCatching {
         val installedResult = sshClient().exec("apk list --installed").getOrThrow()
         if (installedResult.exitCode != 0) {
+            if (installedResult.output.contains("not found") || installedResult.exitCode == 127) {
+                throw OpenWrtException.SshFailure(
+                    "This router doesn't have `apk` — it's likely running OpenWrt older than 24.10 " +
+                        "(which used `opkg` instead). opkg isn't supported yet.",
+                )
+            }
             throw OpenWrtException.SshFailure("`apk list --installed` failed:\n${installedResult.output.take(300)}")
         }
         val installed = parseApkListInstalled(installedResult.output)
@@ -518,7 +528,12 @@ class UbusHttpClient(
 
     /**
      * Performs one ubus "call" JSON-RPC request and returns (ubusStatusCode, dataElementOrNull).
-     * On a session-expired response (PERMISSION_DENIED) it silently re-logs-in once and retries —
+     * Session expiry (procd's idle timeout, ~300s by default) shows up two different ways and
+     * both trigger the same silent re-login-and-retry-once here:
+     *  - the call reaches ubus but is denied: embedded status `UbusStatus.PERMISSION_DENIED` (6)
+     *    inside an otherwise-successful JSON-RPC response.
+     *  - uhttpd-mod-ubus rejects the session before even reaching ubus: JSON-RPC-level
+     *    `error.code == -32002` ("Access denied"), thrown by [post] as [UbusSessionExpiredException].
      * `allowReauth = false` on the retry (and on the login call itself) prevents a retry loop.
      */
     private suspend fun call(
@@ -529,15 +544,26 @@ class UbusHttpClient(
         allowReauth: Boolean = true,
     ): Pair<Int, JsonElement?> = withContext(Dispatchers.IO) {
         val params = listOf(JsonPrimitive(sid), JsonPrimitive(objectName), JsonPrimitive(method), args)
-        val result = post(rpcMethod = "call", params = params)
-        val statusCode = (result.getOrNull(0) as? JsonPrimitive)?.long?.toInt() ?: -1
 
-        if (statusCode == UbusStatus.PERMISSION_DENIED && allowReauth) {
+        suspend fun reauthAndRetry(): Pair<Int, JsonElement?>? {
+            if (!allowReauth) return null
             val username = lastUsername
             val password = lastPassword
             if (username != null && password != null && login(username, password)) {
-                return@withContext call(sessionId, objectName, method, args, allowReauth = false)
+                return call(sessionId, objectName, method, args, allowReauth = false)
             }
+            return null
+        }
+
+        val result = try {
+            post(rpcMethod = "call", params = params)
+        } catch (e: UbusSessionExpiredException) {
+            return@withContext reauthAndRetry() ?: throw OpenWrtException.NotAuthenticated()
+        }
+        val statusCode = (result.getOrNull(0) as? JsonPrimitive)?.long?.toInt() ?: -1
+
+        if (statusCode == UbusStatus.PERMISSION_DENIED) {
+            reauthAndRetry()?.let { return@withContext it }
         }
 
         val data = result.getOrNull(1)?.takeUnless { it is JsonNull }
@@ -546,9 +572,18 @@ class UbusHttpClient(
 
     /** ubus "list": result is a bare array of object-name strings visible to this session. */
     private suspend fun listObjects(sid: String): Set<String> = withContext(Dispatchers.IO) {
-        post(rpcMethod = "list", params = listOf(JsonPrimitive(sid)))
-            .mapNotNull { it.jsonPrimitive.contentOrNull }
-            .toSet()
+        val response = try {
+            post(rpcMethod = "list", params = listOf(JsonPrimitive(sid)))
+        } catch (e: UbusSessionExpiredException) {
+            val username = lastUsername
+            val password = lastPassword
+            if (username != null && password != null && login(username, password)) {
+                post(rpcMethod = "list", params = listOf(JsonPrimitive(sessionId)))
+            } else {
+                throw OpenWrtException.NotAuthenticated()
+            }
+        }
+        response.mapNotNull { it.jsonPrimitive.contentOrNull }.toSet()
     }
 
     private suspend fun post(rpcMethod: String, params: List<JsonElement>): List<JsonElement> = withContext(Dispatchers.IO) {
@@ -575,12 +610,16 @@ class UbusHttpClient(
         } catch (e: Exception) {
             throw OpenWrtException.UnexpectedResponse(responseBody.take(200))
         }
-        parsed.error?.let { throw OpenWrtException.UnexpectedResponse("${it.code}: ${it.message}") }
+        parsed.error?.let {
+            if (it.code == UBUS_RPC_ACCESS_DENIED) throw UbusSessionExpiredException()
+            throw OpenWrtException.UnexpectedResponse("${it.code}: ${it.message}")
+        }
         parsed.result ?: throw OpenWrtException.UnexpectedResponse("Missing result array")
     }
 
     private fun Throwable.toOpenWrtException(): OpenWrtException = when (this) {
         is OpenWrtException -> this
+        is UbusSessionExpiredException -> OpenWrtException.NotAuthenticated()
         is SshHostKeyMismatchException -> OpenWrtException.SshHostKeyChanged(message ?: "SSH host key changed")
         is SshException -> OpenWrtException.SshFailure(message ?: "SSH error")
         else -> OpenWrtException.UnexpectedResponse(message ?: "Unknown error")

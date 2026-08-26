@@ -54,6 +54,11 @@ fun OpenWrtNavGraph(repository: RouterRepository, navController: NavHostControll
                 onOpenUciEditor = { navController.navigate(Screen.UciEditor.routeFor(profileId)) },
                 onOpenDnsManagement = { navController.navigate(Screen.Dns.routeFor(profileId)) },
                 onOpenBackupRestore = { navController.navigate(Screen.Backup.routeFor(profileId)) },
+                onSwitchRouter = {
+                    navController.navigate(Screen.RouterList.route) {
+                        popUpTo(Screen.RouterList.route) { inclusive = true }
+                    }
+                },
             )
         }
         composable(route = Screen.Diagnostics.route, arguments = listOf(PROFILE_ID_ARG)) {
