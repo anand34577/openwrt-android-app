@@ -6,7 +6,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Devices
-import androidx.compose.material.icons.filled.Router
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -23,24 +24,28 @@ import androidx.compose.ui.Modifier
 import com.openwrtmgr.app.domain.repository.RouterRepository
 import com.openwrtmgr.app.feature.clients.ClientsScreen
 import com.openwrtmgr.app.feature.dashboard.DashboardScreen
-import com.openwrtmgr.app.feature.firewall.PortForwardingScreen
+import com.openwrtmgr.app.feature.firewall.FirewallScreen
+import com.openwrtmgr.app.feature.more.MoreScreen
 import com.openwrtmgr.app.feature.system.SystemScreen
 
-/**
- * Section 20/55 — bottom navigation once a router is selected, instead of one giant menu.
- * "More" (section 55) isn't built yet: only the sections with real data go here so far.
- * Each tab keeps its own top app bar (with the back-to-routers action); this screen only owns
- * the bottom bar, to avoid stacking two app bars on top of each other.
- */
+/** Bottom navigation once a router is selected. "More" hosts the tools that don't fit a tab of their own. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RouterHomeScreen(repository: RouterRepository, profileId: Long, onBack: () -> Unit) {
+fun RouterHomeScreen(
+    repository: RouterRepository,
+    profileId: Long,
+    onOpenDiagnostics: () -> Unit,
+    onOpenUciEditor: () -> Unit,
+    onOpenDnsManagement: () -> Unit,
+    onOpenBackupRestore: () -> Unit,
+) {
     var selectedTab by remember { mutableIntStateOf(0) }
     val tabs = listOf(
         Tab("Dashboard", Icons.Default.Dashboard),
         Tab("Devices", Icons.Default.Devices),
-        Tab("Port Forwarding", Icons.Default.Router),
+        Tab("Firewall", Icons.Default.Security),
         Tab("System", Icons.Default.Settings),
+        Tab("More", Icons.Default.MoreHoriz),
     )
 
     Scaffold(
@@ -60,10 +65,16 @@ fun RouterHomeScreen(repository: RouterRepository, profileId: Long, onBack: () -
         Box(modifier = Modifier.padding(padding)) {
             Crossfade(targetState = selectedTab, label = "routerTab") { tab ->
                 when (tab) {
-                    0 -> DashboardScreen(repository, profileId, onBack)
-                    1 -> ClientsScreen(repository, profileId, onBack)
-                    2 -> PortForwardingScreen(repository, profileId, onBack)
-                    else -> SystemScreen(repository, profileId, onBack)
+                    0 -> DashboardScreen(repository, profileId)
+                    1 -> ClientsScreen(repository, profileId)
+                    2 -> FirewallScreen(repository, profileId)
+                    3 -> SystemScreen(repository, profileId)
+                    else -> MoreScreen(
+                        onOpenDiagnostics = onOpenDiagnostics,
+                        onOpenUciEditor = onOpenUciEditor,
+                        onOpenDnsManagement = onOpenDnsManagement,
+                        onOpenBackupRestore = onOpenBackupRestore,
+                    )
                 }
             }
         }

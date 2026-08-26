@@ -15,7 +15,8 @@ import kotlinx.coroutines.launch
 
 sealed interface ServicesUiState {
     data object Loading : ServicesUiState
-    data class Loaded(val services: List<ServiceStatus>) : ServicesUiState
+    /** [busy] is the service name currently being started/stopped/restarted, if any. */
+    data class Loaded(val services: List<ServiceStatus>, val busy: String? = null, val actionMessage: String? = null) : ServicesUiState
     data class Error(val message: String) : ServicesUiState
 }
 
@@ -81,6 +82,31 @@ class SystemViewModel(
                 .onSuccess { pkgs -> _packages.value = PackagesUiState.Loaded(pkgs.sortedBy { it.name }) }
                 .onFailure { _packages.value = PackagesUiState.Error(it.message ?: "Something went wrong") }
         }
+    }
+
+    fun startService(name: String) = runServiceAction(name) { it.startService(name) }
+    fun stopService(name: String) = runServiceAction(name) { it.stopService(name) }
+    fun restartService(name: String) = runServiceAction(name) { it.restartService(name) }
+
+    private fun runServiceAction(name: String, action: suspend (OpenWrtClient) -> Result<PackageActionResult>) {
+        val current = _services.value as? ServicesUiState.Loaded ?: return
+        _services.value = current.copy(busy = name)
+        viewModelScope.launch {
+            repository.clientFor(profileId)
+                .mapCatching { action(it).getOrThrow() }
+                .onSuccess { result ->
+                    val services = repository.clientFor(profileId).mapCatching { it.getServices().getOrThrow() }.getOrDefault(current.services)
+                    _services.value = ServicesUiState.Loaded(services, actionMessage = result.output.ifBlank { "Done." })
+                }
+                .onFailure { failure ->
+                    _services.value = current.copy(busy = null, actionMessage = failure.message ?: "Action failed")
+                }
+        }
+    }
+
+    fun consumeServiceActionMessage() {
+        val current = _services.value as? ServicesUiState.Loaded ?: return
+        _services.value = current.copy(actionMessage = null)
     }
 
     fun refreshPackageLists() = runPackageAction(busyLabel = "apk update") { it.refreshPackageLists() }

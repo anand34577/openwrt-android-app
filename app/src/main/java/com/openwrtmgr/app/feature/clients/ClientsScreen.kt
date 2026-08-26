@@ -6,15 +6,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SettingsEthernet
 import androidx.compose.material.icons.filled.SignalWifi4Bar
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -36,12 +37,13 @@ import com.openwrtmgr.app.domain.model.ConnectionType
 import com.openwrtmgr.app.domain.repository.RouterRepository
 import com.openwrtmgr.app.ui.components.EmptyState
 import com.openwrtmgr.app.ui.components.ErrorState
+import com.openwrtmgr.app.ui.components.SectionHeader
 import com.openwrtmgr.app.ui.components.SkeletonLoading
 
-/** Section 13 — merged DHCP + Wi-Fi client list. Empty state and error state are real, not TODOs. */
+/** Merged DHCP + Wi-Fi client list, grouped by connection type. Empty state and error state are real, not TODOs. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ClientsScreen(repository: RouterRepository, profileId: Long, onBack: () -> Unit) {
+fun ClientsScreen(repository: RouterRepository, profileId: Long) {
     val viewModel: ClientsViewModel = viewModel(
         factory = viewModelFactory { initializer { ClientsViewModel(repository, profileId) } },
     )
@@ -51,9 +53,6 @@ fun ClientsScreen(repository: RouterRepository, profileId: Long, onBack: () -> U
         topBar = {
             TopAppBar(
                 title = { Text("Devices") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Back to routers") }
-                },
                 actions = {
                     IconButton(onClick = viewModel::refresh) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
@@ -74,8 +73,17 @@ fun ClientsScreen(repository: RouterRepository, profileId: Long, onBack: () -> U
                         message = "No DHCP leases or associated Wi-Fi clients right now. A device with a static IP that never requested a lease won't appear here.",
                     )
                 } else {
+                    val wireless = s.clients.filter { it.connectionType == ConnectionType.WIRELESS }
+                    val wired = s.clients.filter { it.connectionType != ConnectionType.WIRELESS }
                     LazyColumn(contentPadding = padding, modifier = Modifier.fillMaxSize()) {
-                        items(s.clients, key = { it.macAddress }) { ClientRow(it) }
+                        if (wireless.isNotEmpty()) {
+                            item { SectionHeader("Wireless · ${wireless.size}") }
+                            items(wireless, key = { it.macAddress }) { ClientRow(it) }
+                        }
+                        if (wired.isNotEmpty()) {
+                            item { SectionHeader("Wired · ${wired.size}") }
+                            items(wired, key = { it.macAddress }) { ClientRow(it) }
+                        }
                     }
                 }
             }
@@ -87,20 +95,42 @@ fun ClientsScreen(repository: RouterRepository, profileId: Long, onBack: () -> U
 private fun ClientRow(client: Client) {
     Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
         Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                if (client.connectionType == ConnectionType.WIRELESS) Icons.Default.SignalWifi4Bar else Icons.Default.SettingsEthernet,
-                contentDescription = null,
-                modifier = Modifier.padding(end = 12.dp),
-            )
-            Column(modifier = Modifier.fillMaxWidth()) {
+            Card(
+                shape = androidx.compose.foundation.shape.CircleShape,
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                modifier = Modifier.size(40.dp),
+            ) {
+                androidx.compose.foundation.layout.Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        if (client.connectionType == ConnectionType.WIRELESS) Icons.Default.SignalWifi4Bar else Icons.Default.SettingsEthernet,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+            }
+            Column(modifier = Modifier.fillMaxWidth().padding(start = 12.dp)) {
                 Text(client.hostname ?: client.ipAddress ?: client.macAddress, style = MaterialTheme.typography.titleSmall)
                 val details = buildList {
                     client.ipAddress?.let { add(it) }
                     add(client.macAddress)
-                    client.wifi?.signalDbm?.let { add("$it dBm") }
+                    client.wifi?.signalDbm?.let { add(signalLabel(it)) }
                 }
                 Text(details.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
             }
         }
     }
+}
+
+/** A short human label instead of a bare dBm number — most users don't know what -67 dBm means. */
+private fun signalLabel(dbm: Int): String {
+    val quality = when {
+        dbm >= -50 -> "Excellent"
+        dbm >= -60 -> "Good"
+        dbm >= -70 -> "Fair"
+        else -> "Weak"
+    }
+    return "$quality ($dbm dBm)"
 }

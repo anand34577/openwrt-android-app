@@ -13,22 +13,22 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,31 +44,34 @@ import com.openwrtmgr.app.domain.model.NetworkInterfaceInfo
 import com.openwrtmgr.app.domain.model.SystemInfo
 import com.openwrtmgr.app.domain.model.WifiRadio
 import com.openwrtmgr.app.domain.repository.RouterRepository
+import com.openwrtmgr.app.ui.components.ConfirmDialog
 import com.openwrtmgr.app.ui.components.ErrorState
+import com.openwrtmgr.app.ui.components.InfoBanner
 import com.openwrtmgr.app.ui.components.SkeletonLoading
 import com.openwrtmgr.app.ui.components.StatusDot
 import java.util.concurrent.TimeUnit
 
-/** Section 8 dashboard: system, interfaces, and Wi-Fi (capability-gated — hidden on wired-only routers). */
+/** Dashboard: system, interfaces, and Wi-Fi (capability-gated — hidden on wired-only routers). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DashboardScreen(repository: RouterRepository, profileId: Long, onBack: () -> Unit) {
+fun DashboardScreen(repository: RouterRepository, profileId: Long) {
     val viewModel: DashboardViewModel = viewModel(
         factory = viewModelFactory { initializer { DashboardViewModel(repository, profileId) } },
     )
     val state by viewModel.state.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
 
-    // Section 33/34 — one confirmation gate for every action that can sever the connection.
+    // One confirmation gate for every action that can sever the connection.
     var pendingAction by remember { mutableStateOf<PendingAction?>(null) }
     var rebooted by remember { mutableStateOf(false) }
+
+    val actionError = (state as? DashboardUiState.Loaded)?.actionError
+    LaunchedEffect(actionError) { actionError?.let { snackbarHostState.showSnackbar(it) } }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Dashboard") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Back to routers") }
-                },
                 actions = {
                     IconButton(onClick = { pendingAction = PendingAction.Reboot }) {
                         Icon(Icons.Default.PowerSettingsNew, contentDescription = "Reboot router")
@@ -79,15 +82,15 @@ fun DashboardScreen(repository: RouterRepository, profileId: Long, onBack: () ->
                 },
             )
         },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         Crossfade(targetState = state, label = "dashboard") { s ->
             when (s) {
                 is DashboardUiState.Loading -> SkeletonLoading(padding)
                 is DashboardUiState.Error -> ErrorState(padding, s.message, title = "Unable to connect", onRetry = viewModel::refresh)
-                is DashboardUiState.Loaded -> Column(modifier = Modifier.fillMaxSize()) {
-                    AnimatedVisibility(visible = rebooted) { RebootedBanner() }
-                    AnimatedVisibility(visible = s.actionError != null) {
-                        s.actionError?.let { ErrorSnackbar(it) }
+                is DashboardUiState.Loaded -> Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+                    AnimatedVisibility(visible = rebooted) {
+                        InfoBanner("Reboot requested. The router will be unreachable for a minute or two.")
                     }
                     DashboardContent(
                         info = s.systemInfo,
@@ -134,29 +137,14 @@ private fun ConfirmActionDialog(action: PendingAction, onDismiss: () -> Unit, on
         is PendingAction.SetRadio -> (if (action.enabled) "Enable ${action.device}?" else "Disable ${action.device}?") to
             "If your phone is connected over this radio, it will disconnect immediately."
     }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = { Text(message) },
-        confirmButton = { TextButton(onClick = onConfirm) { Text(if (action is PendingAction.Reboot) "Reboot" else "Continue") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    ConfirmDialog(
+        title = title,
+        message = message,
+        confirmLabel = if (action is PendingAction.Reboot) "Reboot" else "Continue",
+        destructive = true,
+        onDismiss = onDismiss,
+        onConfirm = onConfirm,
     )
-}
-
-@Composable
-private fun RebootedBanner() {
-    Card(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-        Text(
-            "Reboot requested. The router will be unreachable for a minute or two.",
-            modifier = Modifier.padding(12.dp),
-            style = MaterialTheme.typography.bodySmall,
-        )
-    }
-}
-
-@Composable
-private fun ErrorSnackbar(message: String) {
-    Snackbar(modifier = Modifier.padding(16.dp)) { Text(message) }
 }
 
 @Composable

@@ -11,30 +11,35 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.openwrtmgr.app.ui.theme.LocalStatusColors
 
 /**
- * Section 33 — "Use color-independent status indicators." A colored dot pairs with a text label
- * everywhere in the app (Up/Down, Running/Stopped, Active/Disabled) so status never depends on
- * color alone, and the same dot+label pattern reads consistently across every screen.
+ * A colored dot pairs with a text label everywhere in the app (Up/Down, Running/Stopped,
+ * Active/Disabled) so status never depends on color alone, and the same dot+label pattern reads
+ * consistently across every screen. Colors come from [LocalStatusColors] so dark mode gets real
+ * contrast instead of a fixed hex value picked for a light background.
  */
 @Composable
 fun StatusDot(active: Boolean, label: String, modifier: Modifier = Modifier) {
+    val colors = LocalStatusColors.current
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
         Box(
             modifier = Modifier
                 .padding(end = 6.dp)
                 .size(8.dp)
-                .background(if (active) StatusColors.on else StatusColors.off, CircleShape),
+                .background(if (active) colors.success else colors.neutral, CircleShape),
         )
         Text(label, style = MaterialTheme.typography.bodySmall)
     }
 }
 
-object StatusColors {
-    val on = Color(0xFF2E7D32)
-    val off = Color(0xFF9E9E9E)
-    val warning = Color(0xFFEF6C00)
-    val error = Color(0xFFC62828)
+/** Same dot+label pattern for a third "warning" state (e.g. upgradable, degraded). */
+@Composable
+fun WarningDot(label: String, modifier: Modifier = Modifier) {
+    val colors = LocalStatusColors.current
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+        Box(modifier = Modifier.padding(end = 6.dp).size(8.dp).background(colors.warning, CircleShape))
+        Text(label, style = MaterialTheme.typography.bodySmall)
+    }
 }

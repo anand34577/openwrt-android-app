@@ -15,7 +15,10 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -25,6 +28,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -37,7 +42,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -48,6 +52,7 @@ import com.openwrtmgr.app.domain.model.LogSeverity
 import com.openwrtmgr.app.domain.model.Package
 import com.openwrtmgr.app.domain.model.ServiceStatus
 import com.openwrtmgr.app.domain.repository.RouterRepository
+import com.openwrtmgr.app.ui.components.ConfirmDialog
 import com.openwrtmgr.app.ui.components.EmptyState
 import com.openwrtmgr.app.ui.components.ErrorState
 import com.openwrtmgr.app.ui.components.SkeletonLoading
@@ -57,11 +62,13 @@ import java.util.Date
 import java.util.Locale
 
 private enum class SystemSubScreen { SERVICES, LOGS, PACKAGES }
+private enum class ServiceActionType { START, STOP, RESTART }
+private data class PendingServiceAction(val service: ServiceStatus, val type: ServiceActionType)
 
-/** Section 19/20/21 — services (read-only), packages (`apk`, over SSH), and the system log. */
+/** Services (real start/stop/restart over SSH), packages (`apk`, over SSH), and the system log. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SystemScreen(repository: RouterRepository, profileId: Long, onBack: () -> Unit) {
+fun SystemScreen(repository: RouterRepository, profileId: Long) {
     val viewModel: SystemViewModel = viewModel(
         factory = viewModelFactory { initializer { SystemViewModel(repository, profileId) } },
     )
@@ -72,7 +79,6 @@ fun SystemScreen(repository: RouterRepository, profileId: Long, onBack: () -> Un
         SystemSubScreen.PACKAGES -> PackagesScreen(viewModel, onBack = { sub = SystemSubScreen.SERVICES })
         SystemSubScreen.SERVICES -> ServicesScreen(
             viewModel,
-            onBack = onBack,
             onOpenLogs = { sub = SystemSubScreen.LOGS },
             onOpenPackages = { sub = SystemSubScreen.PACKAGES },
         )
@@ -83,19 +89,22 @@ fun SystemScreen(repository: RouterRepository, profileId: Long, onBack: () -> Un
 @Composable
 private fun ServicesScreen(
     viewModel: SystemViewModel,
-    onBack: () -> Unit,
     onOpenLogs: () -> Unit,
     onOpenPackages: () -> Unit,
 ) {
     val state by viewModel.services.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+    var pendingAction by remember { mutableStateOf<PendingServiceAction?>(null) }
+
+    val actionMessage = (state as? ServicesUiState.Loaded)?.actionMessage
+    LaunchedEffect(actionMessage) {
+        actionMessage?.let { snackbarHostState.showSnackbar(it); viewModel.consumeServiceActionMessage() }
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Services") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Back to routers") }
-                },
                 actions = {
                     IconButton(onClick = onOpenPackages) { Icon(Icons.Default.Inventory2, contentDescription = "Packages") }
                     IconButton(onClick = onOpenLogs) { Icon(Icons.Default.Article, contentDescription = "View logs") }
@@ -103,46 +112,73 @@ private fun ServicesScreen(
                 },
             )
         },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         Crossfade(targetState = state, label = "services") { s ->
             when (s) {
                 is ServicesUiState.Loading -> SkeletonLoading(padding)
                 is ServicesUiState.Error -> ErrorState(padding, s.message, onRetry = viewModel::refreshServices)
                 is ServicesUiState.Loaded -> LazyColumn(contentPadding = padding, modifier = Modifier.fillMaxSize()) {
-                    item { StartStopNotice() }
-                    items(s.services, key = { it.name }) { ServiceRow(it) }
+                    items(s.services, key = { it.name }) { service ->
+                        ServiceRow(
+                            service,
+                            busy = s.busy == service.name,
+                            onStart = { pendingAction = PendingServiceAction(service, ServiceActionType.START) },
+                            onStop = { pendingAction = PendingServiceAction(service, ServiceActionType.STOP) },
+                            onRestart = { pendingAction = PendingServiceAction(service, ServiceActionType.RESTART) },
+                        )
+                    }
                 }
             }
         }
     }
-}
 
-@Composable
-private fun StartStopNotice() {
-    Card(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-        Text(
-            "Status only. Starting/stopping/restarting a service needs shell access " +
-                "(/etc/init.d/<service> restart) — coming with the SSH terminal.",
-            modifier = Modifier.padding(12.dp),
-            style = MaterialTheme.typography.bodySmall,
+    pendingAction?.let { action ->
+        val verb = when (action.type) { ServiceActionType.START -> "start"; ServiceActionType.STOP -> "stop"; ServiceActionType.RESTART -> "restart" }
+        ConfirmDialog(
+            title = "${verb.replaceFirstChar { it.uppercase() }} ${action.service.name}?",
+            message = "This runs /etc/init.d/${action.service.name} $verb on the router over SSH.",
+            confirmLabel = verb.replaceFirstChar { it.uppercase() },
+            destructive = action.type == ServiceActionType.STOP,
+            onDismiss = { pendingAction = null },
+            onConfirm = {
+                when (action.type) {
+                    ServiceActionType.START -> viewModel.startService(action.service.name)
+                    ServiceActionType.STOP -> viewModel.stopService(action.service.name)
+                    ServiceActionType.RESTART -> viewModel.restartService(action.service.name)
+                }
+                pendingAction = null
+            },
         )
     }
 }
 
 @Composable
-private fun ServiceRow(service: ServiceStatus) {
+private fun ServiceRow(service: ServiceStatus, busy: Boolean, onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(service.name, style = MaterialTheme.typography.titleSmall)
-            StatusDot(service.running, if (service.running) "Running" else "Stopped", modifier = Modifier.padding(top = 2.dp))
-            val detail = buildString {
-                service.pid?.let { append("pid $it") }
-                if (service.instanceCount > 1) {
-                    if (isNotEmpty()) append(" · ")
-                    append("${service.instanceCount} instances")
+        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(service.name, style = MaterialTheme.typography.titleSmall)
+                StatusDot(service.running, if (service.running) "Running" else "Stopped", modifier = Modifier.padding(top = 2.dp))
+                val detail = buildString {
+                    service.pid?.let { append("pid $it") }
+                    if (service.instanceCount > 1) {
+                        if (isNotEmpty()) append(" · ")
+                        append("${service.instanceCount} instances")
+                    }
+                }
+                if (detail.isNotEmpty()) Text(detail, style = MaterialTheme.typography.bodySmall)
+            }
+            if (busy) {
+                CircularProgressIndicator(modifier = Modifier.padding(8.dp))
+            } else {
+                if (service.running) {
+                    IconButton(onClick = onRestart) { Icon(Icons.Default.Replay, contentDescription = "Restart ${service.name}") }
+                    IconButton(onClick = onStop) { Icon(Icons.Default.Stop, contentDescription = "Stop ${service.name}") }
+                } else {
+                    IconButton(onClick = onStart) { Icon(Icons.Default.PlayArrow, contentDescription = "Start ${service.name}") }
                 }
             }
-            if (detail.isNotEmpty()) Text(detail, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -193,6 +229,7 @@ private fun PackagesScreen(viewModel: SystemViewModel, onBack: () -> Unit) {
     LaunchedEffect(Unit) { viewModel.refreshPackages() }
 
     var showInstallDialog by remember { mutableStateOf(false) }
+    var pendingInstall by remember { mutableStateOf<String?>(null) }
     var pendingRemoval by remember { mutableStateOf<Package?>(null) }
 
     Scaffold(
@@ -231,19 +268,27 @@ private fun PackagesScreen(viewModel: SystemViewModel, onBack: () -> Unit) {
             onDismiss = { showInstallDialog = false },
             onInstall = { name ->
                 showInstallDialog = false
-                viewModel.installPackage(name)
+                pendingInstall = name
             },
         )
     }
+    pendingInstall?.let { name ->
+        ConfirmDialog(
+            title = "Install $name?",
+            message = "This runs apk add $name on the router.",
+            confirmLabel = "Install",
+            onDismiss = { pendingInstall = null },
+            onConfirm = { viewModel.installPackage(name); pendingInstall = null },
+        )
+    }
     pendingRemoval?.let { pkg ->
-        AlertDialog(
-            onDismissRequest = { pendingRemoval = null },
-            title = { Text("Remove ${pkg.name}?") },
-            text = { Text("This runs apk del ${pkg.name} on the router. Some packages are required by others — removal can fail safely, or break dependent functionality if forced.") },
-            confirmButton = {
-                TextButton(onClick = { viewModel.removePackage(pkg.name); pendingRemoval = null }) { Text("Remove") }
-            },
-            dismissButton = { TextButton(onClick = { pendingRemoval = null }) { Text("Cancel") } },
+        ConfirmDialog(
+            title = "Remove ${pkg.name}?",
+            message = "This runs apk del ${pkg.name} on the router. Some packages are required by others — removal can fail safely, or break dependent functionality if forced.",
+            confirmLabel = "Remove",
+            destructive = true,
+            onDismiss = { pendingRemoval = null },
+            onConfirm = { viewModel.removePackage(pkg.name); pendingRemoval = null },
         )
     }
 }
@@ -313,9 +358,16 @@ private fun InstallPackageDialog(onDismiss: () -> Unit, onInstall: (String) -> U
 
 private val timeFormatter = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
-/** Section 21 — terminal-ish aesthetic for raw log lines, color-coded by severity, monospace. */
+/** Terminal-ish aesthetic for raw log lines, color-coded by severity, monospace. */
 @Composable
 private fun LogRow(entry: LogEntry) {
+    val colors = com.openwrtmgr.app.ui.theme.LocalStatusColors.current
+    val severityColor = when (entry.severity) {
+        LogSeverity.EMERGENCY, LogSeverity.ALERT, LogSeverity.CRITICAL, LogSeverity.ERROR -> colors.danger
+        LogSeverity.WARNING -> colors.warning
+        LogSeverity.NOTICE, LogSeverity.INFO -> MaterialTheme.colorScheme.onSurface
+        LogSeverity.DEBUG -> colors.neutral
+    }
     Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
         Text(
             timeFormatter.format(Date(entry.epochSeconds * 1000)),
@@ -327,14 +379,7 @@ private fun LogRow(entry: LogEntry) {
             entry.message,
             style = MaterialTheme.typography.bodySmall,
             fontFamily = FontFamily.Monospace,
-            color = severityColor(entry.severity),
+            color = severityColor,
         )
     }
-}
-
-private fun severityColor(severity: LogSeverity): Color = when (severity) {
-    LogSeverity.EMERGENCY, LogSeverity.ALERT, LogSeverity.CRITICAL, LogSeverity.ERROR -> Color(0xFFC62828)
-    LogSeverity.WARNING -> Color(0xFFEF6C00)
-    LogSeverity.NOTICE, LogSeverity.INFO -> Color.Unspecified
-    LogSeverity.DEBUG -> Color(0xFF9E9E9E)
 }
