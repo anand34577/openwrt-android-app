@@ -1,0 +1,4 @@
+<resources>
+    <!-- Compose owns theming via MaterialTheme; this is just the pre-Compose window bootstrap theme. -->
+    <style name="Theme.OpenWrtManager" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

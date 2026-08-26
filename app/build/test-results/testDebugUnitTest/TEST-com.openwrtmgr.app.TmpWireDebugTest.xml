@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.openwrtmgr.app.TmpWireDebugTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-08-26T08:40:52" hostname="ADMIN-PC" time="0.136">
+  <properties/>
+  <testcase name="printBody" classname="com.openwrtmgr.app.TmpWireDebugTest" time="0.136"/>
+  <system-out><![CDATA[BODY={"id":1,"params":["00000000000000000000000000000000","session","login",{"username":"root","password":"pw"}]}
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
