@@ -340,18 +340,23 @@ private fun TrafficRuleDialog(existing: TrafficRule?, onDismiss: () -> Unit, onS
 @Composable
 private fun ZonesTab(viewModel: FirewallViewModel, padding: PaddingValues) {
     val state by viewModel.zones.collectAsState()
+    val vlans by viewModel.vlans.collectAsState()
     var editing by remember { mutableStateOf<FirewallZone?>(null) }
     var deleting by remember { mutableStateOf<FirewallZone?>(null) }
 
     when (val s = state) {
         is UiState.Loading -> SkeletonLoading(padding)
         is UiState.Error -> ErrorState(padding, s.message, title = "Couldn't load zones", onRetry = viewModel::refreshZones)
-        is UiState.Loaded -> if (s.data.isEmpty()) {
+        is UiState.Loaded -> if (s.data.isEmpty() && vlans.isEmpty()) {
             EmptyState(padding, Icons.Default.Shield, "No firewall zones", "Zones group interfaces (lan, wan, guest...) for traffic rules to reference.")
         } else {
             LazyColumn(contentPadding = padding, modifier = Modifier.fillMaxSize()) {
                 items(s.data, key = { it.uciSectionId ?: it.name }) { zone ->
                     ZoneRow(zone, onEdit = { editing = zone }, onDelete = { deleting = zone })
+                }
+                if (vlans.isNotEmpty()) {
+                    item { VlanSectionHeader() }
+                    items(vlans, key = { it.uciSectionId }) { VlanRow(it) }
                 }
             }
         }
@@ -392,6 +397,25 @@ private fun ZoneRow(zone: FirewallZone, onEdit: () -> Unit, onDelete: () -> Unit
                 }
             }
             IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, contentDescription = "Delete zone") }
+        }
+    }
+}
+
+@Composable
+private fun VlanSectionHeader() {
+    com.openwrtmgr.app.ui.components.SectionHeader("VLAN devices (read-only)")
+}
+
+/** Read-only: full VLAN authoring (creating/editing 802.1q devices) isn't built yet — see the app's README. */
+@Composable
+private fun VlanRow(vlan: com.openwrtmgr.app.domain.model.VlanDevice) {
+    Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(vlan.name, style = MaterialTheme.typography.titleSmall)
+            Text(
+                "VLAN ${vlan.vlanId ?: "?"} on ${vlan.baseDevice ?: "?"} · ${vlan.type}",
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }

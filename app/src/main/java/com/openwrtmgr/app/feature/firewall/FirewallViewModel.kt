@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.openwrtmgr.app.domain.model.FirewallZone
 import com.openwrtmgr.app.domain.model.PortForward
 import com.openwrtmgr.app.domain.model.TrafficRule
+import com.openwrtmgr.app.domain.model.VlanDevice
 import com.openwrtmgr.app.domain.repository.RouterRepository
 import com.openwrtmgr.app.ui.components.UiState
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +31,9 @@ class FirewallViewModel(
     private val _zones = MutableStateFlow<UiState<List<FirewallZone>>>(UiState.Loading)
     val zones: StateFlow<UiState<List<FirewallZone>>> = _zones.asStateFlow()
 
+    private val _vlans = MutableStateFlow<List<VlanDevice>>(emptyList())
+    val vlans: StateFlow<List<VlanDevice>> = _vlans.asStateFlow()
+
     private val _actionMessage = MutableStateFlow<String?>(null)
     val actionMessage: StateFlow<String?> = _actionMessage.asStateFlow()
 
@@ -40,6 +44,10 @@ class FirewallViewModel(
         refreshPortForwards()
         refreshTrafficRules()
         refreshZones()
+        viewModelScope.launch {
+            repository.clientFor(profileId).mapCatching { it.getVlanDevices().getOrThrow() }
+                .onSuccess { _vlans.value = it }
+        }
     }
 
     fun consumeActionMessage() {
