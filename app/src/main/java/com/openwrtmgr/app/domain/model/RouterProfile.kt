@@ -10,6 +10,8 @@ data class RouterProfile(
     val username: String = "root",
     val sshPort: Int = 22,
     val lastConnectedEpochMillis: Long? = null,
+    /** TOFU-pinned SSH host key fingerprint (SHA256, sshj format). Null until the first SSH connection. */
+    val sshHostKeyFingerprint: String? = null,
 ) {
     val baseUrl: String get() = "${if (useHttps) "https" else "http"}://$host:$port"
 }

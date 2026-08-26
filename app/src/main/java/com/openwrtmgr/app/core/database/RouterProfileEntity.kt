@@ -15,6 +15,7 @@ data class RouterProfileEntity(
     val username: String,
     val sshPort: Int = 22,
     val lastConnectedEpochMillis: Long?,
+    val sshHostKeyFingerprint: String? = null,
 )
 
 fun RouterProfileEntity.toDomain() = RouterProfile(
@@ -26,6 +27,7 @@ fun RouterProfileEntity.toDomain() = RouterProfile(
     username = username,
     sshPort = sshPort,
     lastConnectedEpochMillis = lastConnectedEpochMillis,
+    sshHostKeyFingerprint = sshHostKeyFingerprint,
 )
 
 fun RouterProfile.toEntity() = RouterProfileEntity(
@@ -37,4 +39,5 @@ fun RouterProfile.toEntity() = RouterProfileEntity(
     username = username,
     sshPort = sshPort,
     lastConnectedEpochMillis = lastConnectedEpochMillis,
+    sshHostKeyFingerprint = sshHostKeyFingerprint,
 )

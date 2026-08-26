@@ -7,10 +7,15 @@ import com.openwrtmgr.app.core.networking.parseApkListUpgradable
 import com.openwrtmgr.app.core.networking.parseApkNameVersion
 import com.openwrtmgr.app.core.networking.parseDhcpLeases
 import com.openwrtmgr.app.core.networking.parseSystemInfo
+import com.openwrtmgr.app.core.networking.toDnsRecordOrNull
+import com.openwrtmgr.app.core.networking.toFirewallZone
 import com.openwrtmgr.app.core.networking.toInterfaceInfo
 import com.openwrtmgr.app.core.networking.toLogEntry
 import com.openwrtmgr.app.core.networking.toPortForward
 import com.openwrtmgr.app.core.networking.toServiceStatus
+import com.openwrtmgr.app.core.networking.toTrafficRule
+import com.openwrtmgr.app.core.networking.toUciSection
+import com.openwrtmgr.app.core.networking.toVlanDeviceOrNull
 import com.openwrtmgr.app.core.networking.toWifiAssociation
 import com.openwrtmgr.app.domain.model.LogSeverity
 import kotlinx.serialization.json.Json
@@ -217,5 +222,68 @@ class UbusParsingTest {
         val result = parseApkListUpgradable(output)
 
         assertEquals("1.36.1-r3", result["busybox"])
+    }
+
+    @Test
+    fun `splits a multi-hyphen package name from its version`() {
+        assertEquals("libjpeg-turbo" to "3.0.1-r0", parseApkNameVersion("libjpeg-turbo-3.0.1-r0"))
+    }
+
+    @Test
+    fun `parses a firewall zone section`() {
+        val section = obj(
+            """{".type":"zone","name":"lan","input":"ACCEPT","output":"ACCEPT","forward":"ACCEPT",
+              "masq":"0","network":["lan"]}""",
+        )
+
+        val result = section.toFirewallZone("cfg01")
+
+        assertEquals("lan", result.name)
+        assertEquals("ACCEPT", result.input)
+        assertEquals(false, result.masq)
+        assertEquals(listOf("lan"), result.networks)
+    }
+
+    @Test
+    fun `parses a traffic rule section`() {
+        val section = obj(
+            """{".type":"rule","name":"Allow-SSH","src":"wan","proto":"tcp","dest_port":"22","target":"ACCEPT"}""",
+        )
+
+        val result = section.toTrafficRule("cfg02")
+
+        assertEquals("Allow-SSH", result.name)
+        assertEquals("wan", result.sourceZone)
+        assertEquals(null, result.destZone)
+        assertEquals("22", result.destPort)
+    }
+
+    @Test
+    fun `recognizes an 8021q VLAN device section but not a plain device`() {
+        val vlan = obj("""{".type":"device","name":"lan.10","type":"8021q","ifname":"lan","vid":"10"}""")
+        val plain = obj("""{".type":"device","name":"br-lan"}""")
+
+        assertEquals(10, vlan.toVlanDeviceOrNull("cfg03")?.vlanId)
+        assertEquals(null, plain.toVlanDeviceOrNull("cfg04"))
+    }
+
+    @Test
+    fun `parses a dhcp domain section as a DNS record`() {
+        val domain = obj("""{".type":"domain","name":"nas.lan","ip":"192.168.1.50"}""")
+        val notADomain = obj("""{".type":"host","name":"other"}""")
+
+        assertEquals("192.168.1.50", domain.toDnsRecordOrNull("cfg05")?.ipAddress)
+        assertEquals(null, notADomain.toDnsRecordOrNull("cfg06"))
+    }
+
+    @Test
+    fun `converts a generic uci section for the raw editor, dropping meta keys`() {
+        val section = obj("""{".type":"interface",".anonymous":false,"proto":"static","ipaddr":"192.168.1.1"}""")
+
+        val result = section.toUciSection("lan")
+
+        assertEquals("interface", result.type)
+        assertEquals(false, result.isAnonymous)
+        assertEquals(mapOf("proto" to "static", "ipaddr" to "192.168.1.1"), result.options)
     }
 }

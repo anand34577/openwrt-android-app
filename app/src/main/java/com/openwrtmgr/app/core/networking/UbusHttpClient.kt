@@ -2,6 +2,8 @@ package com.openwrtmgr.app.core.networking
 
 import com.openwrtmgr.app.domain.model.Client
 import com.openwrtmgr.app.domain.model.DhcpLease
+import com.openwrtmgr.app.domain.model.DnsRecord
+import com.openwrtmgr.app.domain.model.FirewallZone
 import com.openwrtmgr.app.domain.model.LogEntry
 import com.openwrtmgr.app.domain.model.LogSeverity
 import com.openwrtmgr.app.domain.model.NetworkInterfaceInfo
@@ -12,6 +14,9 @@ import com.openwrtmgr.app.domain.model.RouterCapabilities
 import com.openwrtmgr.app.domain.model.RouterProfile
 import com.openwrtmgr.app.domain.model.ServiceStatus
 import com.openwrtmgr.app.domain.model.SystemInfo
+import com.openwrtmgr.app.domain.model.TrafficRule
+import com.openwrtmgr.app.domain.model.UciSection
+import com.openwrtmgr.app.domain.model.VlanDevice
 import com.openwrtmgr.app.domain.model.WifiAssociation
 import com.openwrtmgr.app.domain.model.WifiRadio
 import com.openwrtmgr.app.domain.model.mergeClients
@@ -42,6 +47,10 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * ubus-over-HTTP implementation of [OpenWrtClient]. One instance per connected router profile.
  * Requires the router to have uhttpd-mod-ubus (bundled with default LuCI installs).
+ *
+ * [onSshHostKeyLearned] persists the SSH host-key fingerprint the first time any SSH-backed call
+ * (packages, service control, backup/restore) succeeds, so later calls can verify against it —
+ * see [SshExecClient]'s TOFU pinning.
  */
 class UbusHttpClient(
     private val profile: RouterProfile,
@@ -49,6 +58,7 @@ class UbusHttpClient(
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS)
         .build(),
+    private val onSshHostKeyLearned: suspend (String) -> Unit = {},
 ) : OpenWrtClient {
 
     // encodeDefaults=true: without it, kotlinx.serialization omits default-valued fields
@@ -62,7 +72,8 @@ class UbusHttpClient(
 
     // Kept only to silently re-login once when the ubus session times out (procd's default idle
     // timeout is ~300s) — otherwise every call after that point fails forever until app restart,
-    // since the cached client in DefaultRouterRepository is reused for the app's lifetime.
+    // since the cached client in DefaultRouterRepository is reused for the app's lifetime. Also
+    // reused as the SSH credentials (same root login) for the SSH-backed calls below.
     @Volatile private var lastUsername: String? = null
     @Volatile private var lastPassword: String? = null
 
@@ -83,7 +94,7 @@ class UbusHttpClient(
 
     override suspend fun getCapabilities(): Result<RouterCapabilities> = runCatching {
         // ubus "list" enumerates every object rpcd currently exposes to this session —
-        // that's the real, per-router, per-permission capability set (section 43).
+        // that's the real, per-router, per-permission capability set.
         // Unlike "call", its result is a bare JSON array of object-name strings, not [status, data].
         RouterCapabilities(listObjects(sessionId))
     }.recoverCatching { throw it.toOpenWrtException() }
@@ -132,11 +143,8 @@ class UbusHttpClient(
 
     override suspend fun setRadioEnabled(device: String, enabled: Boolean): Result<Unit> = runCatching {
         // device is the uci wifi-device section name (e.g. "radio0") from getWifiRadios(), not a netdev ifname.
-        uciSet("wireless", device, mapOf("disabled" to if (enabled) "0" else "1"))
+        uciSetStrings("wireless", device, mapOf("disabled" to if (enabled) "0" else "1"))
         uciCommit("wireless")
-        // ponytail: plain commit, no rollback-safe uci.apply/confirm flow yet — section 34's
-        // "smart reconnection" (auto-revert + UI countdown if the phone drops off) is a real feature,
-        // not a one-liner; wiring `uci apply {"timeout":N}` without the confirm UI would be a false safety net.
         val (status, _) = call(sessionId, "network.wireless", "reload", JsonObject(emptyMap()))
         requireOk(status, "network.wireless.reload")
     }.recoverCatching { throw it.toOpenWrtException() }
@@ -180,32 +188,165 @@ class UbusHttpClient(
     }.recoverCatching { throw it.toOpenWrtException() }
 
     override suspend fun savePortForward(rule: PortForward): Result<Unit> = runCatching {
+        val isNewSection = rule.uciSectionId == null
         val sectionId = rule.uciSectionId ?: uciAdd("firewall", "redirect")
             ?: throw OpenWrtException.UnexpectedResponse("uci didn't return a new section id")
-        uciSet(
-            "firewall",
-            sectionId,
-            mapOf(
-                "name" to rule.name,
-                "enabled" to if (rule.enabled) "1" else "0",
-                "target" to "DNAT",
-                "src" to rule.sourceZone,
-                "dest" to rule.destZone,
-                "proto" to rule.protocol,
-                "src_dport" to rule.externalPort,
-                "dest_ip" to rule.internalIp,
-                "dest_port" to rule.internalPort,
-            ),
-        )
-        uciCommit("firewall")
-        // ponytail: persisted, not applied to the live ruleset — no verified generic ubus "reload
-        // firewall now" call exists in stock OpenWrt; real reload needs `/etc/init.d/firewall reload`
-        // (SSH/exec), which is Phase 7 scope. Surface this to the user rather than fake an apply.
+        try {
+            uciSetStrings(
+                "firewall",
+                sectionId,
+                mapOf(
+                    "name" to rule.name,
+                    "enabled" to if (rule.enabled) "1" else "0",
+                    "target" to "DNAT",
+                    "src" to rule.sourceZone,
+                    "dest" to rule.destZone,
+                    "proto" to rule.protocol,
+                    "src_dport" to rule.externalPort,
+                    "dest_ip" to rule.internalIp,
+                    "dest_port" to rule.internalPort,
+                ),
+            )
+            uciCommit("firewall")
+        } catch (e: Exception) {
+            // A failure between `add` and `set`/`commit` would otherwise leave a nameless orphan
+            // redirect section in /etc/config/firewall — clean it up before surfacing the error.
+            if (isNewSection) runCatching { uciDelete("firewall", sectionId) }
+            throw e
+        }
+        // Persisted, not applied to the live ruleset yet — see reloadFirewall().
     }.recoverCatching { throw it.toOpenWrtException() }
 
     override suspend fun deletePortForward(uciSectionId: String): Result<Unit> = runCatching {
         uciDelete("firewall", uciSectionId)
         uciCommit("firewall")
+    }.recoverCatching { throw it.toOpenWrtException() }
+
+    override suspend fun getFirewallZones(): Result<List<FirewallZone>> = runCatching {
+        val sections = uciGetAll("firewall") ?: return@runCatching emptyList()
+        sections.mapNotNull { (sectionId, section) ->
+            if (section[".type"]?.jsonPrimitive?.contentOrNull != "zone") return@mapNotNull null
+            section.toFirewallZone(sectionId)
+        }
+    }.recoverCatching { throw it.toOpenWrtException() }
+
+    override suspend fun saveFirewallZone(zone: FirewallZone): Result<Unit> = runCatching {
+        val isNewSection = zone.uciSectionId == null
+        val sectionId = zone.uciSectionId ?: uciAdd("firewall", "zone")
+            ?: throw OpenWrtException.UnexpectedResponse("uci didn't return a new section id")
+        try {
+            uciSet(
+                "firewall",
+                sectionId,
+                mapOf(
+                    "name" to JsonPrimitive(zone.name),
+                    "input" to JsonPrimitive(zone.input),
+                    "output" to JsonPrimitive(zone.output),
+                    "forward" to JsonPrimitive(zone.forward),
+                    "masq" to JsonPrimitive(if (zone.masq) "1" else "0"),
+                    "network" to JsonArray(zone.networks.map { JsonPrimitive(it) }),
+                ),
+            )
+            uciCommit("firewall")
+        } catch (e: Exception) {
+            if (isNewSection) runCatching { uciDelete("firewall", sectionId) }
+            throw e
+        }
+    }.recoverCatching { throw it.toOpenWrtException() }
+
+    override suspend fun deleteFirewallZone(uciSectionId: String): Result<Unit> = runCatching {
+        uciDelete("firewall", uciSectionId)
+        uciCommit("firewall")
+    }.recoverCatching { throw it.toOpenWrtException() }
+
+    override suspend fun getTrafficRules(): Result<List<TrafficRule>> = runCatching {
+        val sections = uciGetAll("firewall") ?: return@runCatching emptyList()
+        sections.mapNotNull { (sectionId, section) ->
+            if (section[".type"]?.jsonPrimitive?.contentOrNull != "rule") return@mapNotNull null
+            section.toTrafficRule(sectionId)
+        }
+    }.recoverCatching { throw it.toOpenWrtException() }
+
+    override suspend fun saveTrafficRule(rule: TrafficRule): Result<Unit> = runCatching {
+        val isNewSection = rule.uciSectionId == null
+        val sectionId = rule.uciSectionId ?: uciAdd("firewall", "rule")
+            ?: throw OpenWrtException.UnexpectedResponse("uci didn't return a new section id")
+        try {
+            val values = buildMap {
+                put("name", rule.name)
+                put("enabled", if (rule.enabled) "1" else "0")
+                put("src", rule.sourceZone)
+                rule.destZone?.let { put("dest", it) }
+                put("proto", rule.protocol)
+                if (rule.destPort.isNotBlank()) put("dest_port", rule.destPort)
+                put("target", rule.target)
+            }
+            uciSetStrings("firewall", sectionId, values)
+            uciCommit("firewall")
+        } catch (e: Exception) {
+            if (isNewSection) runCatching { uciDelete("firewall", sectionId) }
+            throw e
+        }
+    }.recoverCatching { throw it.toOpenWrtException() }
+
+    override suspend fun deleteTrafficRule(uciSectionId: String): Result<Unit> = runCatching {
+        uciDelete("firewall", uciSectionId)
+        uciCommit("firewall")
+    }.recoverCatching { throw it.toOpenWrtException() }
+
+    override suspend fun getVlanDevices(): Result<List<VlanDevice>> = runCatching {
+        val sections = uciGetAll("network") ?: return@runCatching emptyList()
+        sections.mapNotNull { (sectionId, section) -> section.toVlanDeviceOrNull(sectionId) }
+    }.recoverCatching { throw it.toOpenWrtException() }
+
+    override suspend fun reloadFirewall(): Result<Unit> = runCatching {
+        val result = sshClient().exec("/etc/init.d/firewall reload").getOrThrow()
+        if (result.exitCode != 0) throw OpenWrtException.SshFailure("Firewall reload failed:\n${result.output.take(300)}")
+    }.recoverCatching { throw it.toOpenWrtException() }
+
+    override suspend fun getDnsRecords(): Result<List<DnsRecord>> = runCatching {
+        val sections = uciGetAll("dhcp") ?: return@runCatching emptyList()
+        sections.mapNotNull { (sectionId, section) -> section.toDnsRecordOrNull(sectionId) }
+    }.recoverCatching { throw it.toOpenWrtException() }
+
+    override suspend fun saveDnsRecord(record: DnsRecord): Result<Unit> = runCatching {
+        val isNewSection = record.uciSectionId == null
+        val sectionId = record.uciSectionId ?: uciAdd("dhcp", "domain")
+            ?: throw OpenWrtException.UnexpectedResponse("uci didn't return a new section id")
+        try {
+            uciSetStrings("dhcp", sectionId, mapOf("name" to record.hostname, "ip" to record.ipAddress))
+            uciCommit("dhcp")
+        } catch (e: Exception) {
+            if (isNewSection) runCatching { uciDelete("dhcp", sectionId) }
+            throw e
+        }
+        // Persisted, not applied to the live dnsmasq instance — needs `/etc/init.d/dnsmasq restart`.
+    }.recoverCatching { throw it.toOpenWrtException() }
+
+    override suspend fun deleteDnsRecord(uciSectionId: String): Result<Unit> = runCatching {
+        uciDelete("dhcp", uciSectionId)
+        uciCommit("dhcp")
+    }.recoverCatching { throw it.toOpenWrtException() }
+
+    override suspend fun getUciConfig(config: String): Result<List<UciSection>> = runCatching {
+        val sections = uciGetAll(config) ?: return@runCatching emptyList()
+        sections.map { (sectionId, section) -> section.toUciSection(sectionId) }
+    }.recoverCatching { throw it.toOpenWrtException() }
+
+    override suspend fun setUciValues(config: String, section: String, values: Map<String, String>): Result<Unit> = runCatching {
+        uciSetStrings(config, section, values)
+        uciCommit(config)
+    }.recoverCatching { throw it.toOpenWrtException() }
+
+    override suspend fun addUciSection(config: String, type: String): Result<String> = runCatching {
+        val id = uciAdd(config, type) ?: throw OpenWrtException.UnexpectedResponse("uci didn't return a new section id")
+        uciCommit(config)
+        id
+    }.recoverCatching { throw it.toOpenWrtException() }
+
+    override suspend fun deleteUciSection(config: String, section: String): Result<Unit> = runCatching {
+        uciDelete(config, section)
+        uciCommit(config)
     }.recoverCatching { throw it.toOpenWrtException() }
 
     override suspend fun reboot(): Result<Unit> = runCatching {
@@ -221,6 +362,21 @@ class UbusHttpClient(
             .sortedBy { it.name }
     }.recoverCatching { throw it.toOpenWrtException() }
 
+    override suspend fun startService(name: String): Result<PackageActionResult> = runCatching {
+        requireValidServiceName(name)
+        sshClient().exec("/etc/init.d/$name start").getOrThrow().toActionResult()
+    }.recoverCatching { throw it.toOpenWrtException() }
+
+    override suspend fun stopService(name: String): Result<PackageActionResult> = runCatching {
+        requireValidServiceName(name)
+        sshClient().exec("/etc/init.d/$name stop").getOrThrow().toActionResult()
+    }.recoverCatching { throw it.toOpenWrtException() }
+
+    override suspend fun restartService(name: String): Result<PackageActionResult> = runCatching {
+        requireValidServiceName(name)
+        sshClient().exec("/etc/init.d/$name restart").getOrThrow().toActionResult()
+    }.recoverCatching { throw it.toOpenWrtException() }
+
     override suspend fun getLogs(lines: Int): Result<List<LogEntry>> = runCatching {
         val args = JsonObject(mapOf("lines" to JsonPrimitive(lines)))
         val (status, data) = call(sessionId, "log", "read", args)
@@ -229,7 +385,7 @@ class UbusHttpClient(
     }.recoverCatching { throw it.toOpenWrtException() }
 
     override suspend fun getInstalledPackages(): Result<List<Package>> = runCatching {
-        val installedResult = sshExec("apk list --installed").getOrThrow()
+        val installedResult = sshClient().exec("apk list --installed").getOrThrow()
         if (installedResult.exitCode != 0) {
             throw OpenWrtException.SshFailure("`apk list --installed` failed:\n${installedResult.output.take(300)}")
         }
@@ -237,7 +393,7 @@ class UbusHttpClient(
 
         // Best-effort: an upgradable-list failure (e.g. no network, no `apk update` run yet)
         // shouldn't hide the installed list the user actually asked for.
-        val upgradable = sshExec("apk list --upgradable").getOrNull()
+        val upgradable = sshClient().exec("apk list --upgradable").getOrNull()
             ?.takeIf { it.exitCode == 0 }
             ?.let { parseApkListUpgradable(it.output) }
             .orEmpty()
@@ -246,32 +402,67 @@ class UbusHttpClient(
     }.recoverCatching { throw it.toOpenWrtException() }
 
     override suspend fun refreshPackageLists(): Result<PackageActionResult> = runCatching {
-        sshExec("apk update").getOrThrow().toActionResult()
+        sshClient().exec("apk update").getOrThrow().toActionResult()
     }.recoverCatching { throw it.toOpenWrtException() }
 
     override suspend fun installPackage(name: String): Result<PackageActionResult> = runCatching {
         requireValidPackageName(name)
-        sshExec("apk add $name").getOrThrow().toActionResult()
+        sshClient().exec("apk add $name").getOrThrow().toActionResult()
     }.recoverCatching { throw it.toOpenWrtException() }
 
     override suspend fun removePackage(name: String): Result<PackageActionResult> = runCatching {
         requireValidPackageName(name)
-        sshExec("apk del $name").getOrThrow().toActionResult()
+        sshClient().exec("apk del $name").getOrThrow().toActionResult()
     }.recoverCatching { throw it.toOpenWrtException() }
 
-    /** Package name as a shell argument: reject anything that isn't a plain apk package name/version-spec. */
+    override suspend fun backupConfig(): Result<ByteArray> = runCatching {
+        val remotePath = "/tmp/openwrtmgr-backup.tar.gz"
+        val ssh = sshClient()
+        val makeBackup = ssh.exec("sysupgrade -b $remotePath", timeoutSeconds = 60).getOrThrow()
+        if (makeBackup.exitCode != 0) {
+            throw OpenWrtException.SshFailure("Backup failed:\n${makeBackup.output.take(300)}")
+        }
+        val bytes = ssh.downloadFile(remotePath).getOrThrow()
+        ssh.exec("rm -f $remotePath")
+        bytes
+    }.recoverCatching { throw it.toOpenWrtException() }
+
+    override suspend fun restoreConfig(archive: ByteArray): Result<Unit> = runCatching {
+        val remotePath = "/tmp/openwrtmgr-restore.tar.gz"
+        val ssh = sshClient()
+        ssh.uploadFile(remotePath, archive).getOrThrow()
+        // sysupgrade -r applies the archive and reboots — the connection is expected to drop
+        // before this returns cleanly on most routers, so its result is intentionally ignored:
+        // a "failure" here is often actually the restore succeeding.
+        ssh.exec("sysupgrade -r $remotePath", timeoutSeconds = 15)
+        Unit
+    }.recoverCatching { throw it.toOpenWrtException() }
+
+    /** Package name / service name as a shell argument: reject anything but a plain apk name/version-spec. */
     private fun requireValidPackageName(name: String) {
         if (!name.matches(Regex("^[A-Za-z0-9][A-Za-z0-9._+-]*$"))) {
             throw OpenWrtException.UnexpectedResponse("\"$name\" isn't a valid package name")
         }
     }
 
+    private fun requireValidServiceName(name: String) {
+        if (!name.matches(Regex("^[A-Za-z0-9][A-Za-z0-9._-]*$"))) {
+            throw OpenWrtException.UnexpectedResponse("\"$name\" isn't a valid service name")
+        }
+    }
+
     /** Same credentials as the ubus session (root's password), over SSH — set once by [authenticate]. */
-    private suspend fun sshExec(command: String): Result<SshExecClient.ExecResult> {
-        val username = lastUsername
-        val password = lastPassword
-        if (username == null || password == null) return Result.failure(OpenWrtException.NotAuthenticated())
-        return SshExecClient(profile.host, profile.sshPort, username, password).exec(command)
+    private fun sshClient(): SshExecClient {
+        val username = lastUsername ?: throw OpenWrtException.NotAuthenticated()
+        val password = lastPassword ?: throw OpenWrtException.NotAuthenticated()
+        return SshExecClient(
+            host = profile.host,
+            port = profile.sshPort,
+            username = username,
+            password = password,
+            knownFingerprint = profile.sshHostKeyFingerprint,
+            onFingerprintLearned = onSshHostKeyLearned,
+        )
     }
 
     /** ubus `network.wireless status` keyed by uci wifi-device section name (radio0, radio1...). */
@@ -294,17 +485,20 @@ class UbusHttpClient(
         return data?.jsonObject?.get("section")?.jsonPrimitive?.contentOrNull
     }
 
-    private suspend fun uciSet(config: String, section: String, values: Map<String, String>) {
+    private suspend fun uciSet(config: String, section: String, values: Map<String, JsonElement>) {
         val args = JsonObject(
             mapOf(
                 "config" to JsonPrimitive(config),
                 "section" to JsonPrimitive(section),
-                "values" to JsonObject(values.mapValues { JsonPrimitive(it.value) }),
+                "values" to JsonObject(values),
             ),
         )
         val (status, _) = call(sessionId, "uci", "set", args)
         if (status != 0) throw OpenWrtException.RouterRejected(status, "Could not update $config.$section")
     }
+
+    private suspend fun uciSetStrings(config: String, section: String, values: Map<String, String>) =
+        uciSet(config, section, values.mapValues { JsonPrimitive(it.value) })
 
     private suspend fun uciDelete(config: String, section: String) {
         val args = JsonObject(mapOf("config" to JsonPrimitive(config), "section" to JsonPrimitive(section)))
@@ -387,6 +581,7 @@ class UbusHttpClient(
 
     private fun Throwable.toOpenWrtException(): OpenWrtException = when (this) {
         is OpenWrtException -> this
+        is SshHostKeyMismatchException -> OpenWrtException.SshHostKeyChanged(message ?: "SSH host key changed")
         is SshException -> OpenWrtException.SshFailure(message ?: "SSH error")
         else -> OpenWrtException.UnexpectedResponse(message ?: "Unknown error")
     }
@@ -442,6 +637,13 @@ private fun JsonElement?.asUciBoolean(): Boolean? = when (this?.jsonPrimitive?.c
     "1", "true" -> true
     "0", "false" -> false
     else -> null
+}
+
+/** uci list-type options render as a JSON array; some paths may still hand back a space-separated string. */
+private fun JsonObject.stringList(key: String): List<String> = when (val value = this[key]) {
+    is JsonArray -> value.mapNotNull { it.jsonPrimitive.contentOrNull }
+    is JsonPrimitive -> value.contentOrNull?.split(Regex("\\s+"))?.filter { it.isNotBlank() } ?: emptyList()
+    else -> emptyList()
 }
 
 /** uci `wifi-iface` `encryption` values (psk2+ccmp, sae-mixed, none, ...) → a short human label. */
@@ -508,6 +710,67 @@ internal fun JsonObject.toPortForward(sectionId: String): PortForward = PortForw
     destZone = this["dest"]?.jsonPrimitive?.contentOrNull ?: "lan",
 )
 
+/** One `config zone` section from `uci get_all firewall`. */
+internal fun JsonObject.toFirewallZone(sectionId: String): FirewallZone = FirewallZone(
+    uciSectionId = sectionId,
+    name = this["name"]?.jsonPrimitive?.contentOrNull ?: sectionId,
+    input = this["input"]?.jsonPrimitive?.contentOrNull ?: "REJECT",
+    output = this["output"]?.jsonPrimitive?.contentOrNull ?: "ACCEPT",
+    forward = this["forward"]?.jsonPrimitive?.contentOrNull ?: "REJECT",
+    masq = this["masq"].asUciBoolean() ?: false,
+    networks = this.stringList("network"),
+)
+
+/** One `config rule` section from `uci get_all firewall`. */
+internal fun JsonObject.toTrafficRule(sectionId: String): TrafficRule = TrafficRule(
+    uciSectionId = sectionId,
+    name = this["name"]?.jsonPrimitive?.contentOrNull ?: sectionId,
+    enabled = this["enabled"].asUciBoolean() ?: true,
+    sourceZone = this["src"]?.jsonPrimitive?.contentOrNull ?: "wan",
+    destZone = this["dest"]?.jsonPrimitive?.contentOrNull,
+    protocol = this["proto"]?.jsonPrimitive?.contentOrNull ?: "tcp",
+    destPort = this["dest_port"]?.jsonPrimitive?.contentOrNull ?: "",
+    target = this["target"]?.jsonPrimitive?.contentOrNull ?: "ACCEPT",
+)
+
+/** A `config device` section from `uci get_all network`, if it's a bridge-VLAN (802.1q/ad) device. */
+internal fun JsonObject.toVlanDeviceOrNull(sectionId: String): VlanDevice? {
+    if (this[".type"]?.jsonPrimitive?.contentOrNull != "device") return null
+    val deviceType = this["type"]?.jsonPrimitive?.contentOrNull
+    if (deviceType != "8021q" && deviceType != "8021ad") return null
+    return VlanDevice(
+        uciSectionId = sectionId,
+        name = this["name"]?.jsonPrimitive?.contentOrNull ?: sectionId,
+        type = deviceType,
+        baseDevice = this["ifname"]?.jsonPrimitive?.contentOrNull,
+        vlanId = this["vid"]?.jsonPrimitive?.contentOrNull?.toIntOrNull(),
+    )
+}
+
+/** A `config domain` section from `uci get_all dhcp` — a static dnsmasq hostname -> IP entry. */
+internal fun JsonObject.toDnsRecordOrNull(sectionId: String): DnsRecord? {
+    if (this[".type"]?.jsonPrimitive?.contentOrNull != "domain") return null
+    val hostname = this["name"]?.jsonPrimitive?.contentOrNull ?: return null
+    val ip = this["ip"]?.jsonPrimitive?.contentOrNull ?: return null
+    return DnsRecord(uciSectionId = sectionId, hostname = hostname, ipAddress = ip)
+}
+
+/** Any UCI section, generically — for the raw config editor. List-type options render space-joined. */
+internal fun JsonObject.toUciSection(sectionId: String): UciSection {
+    val type = this[".type"]?.jsonPrimitive?.contentOrNull ?: "unknown"
+    val anonymous = this[".anonymous"]?.jsonPrimitive?.boolean ?: sectionId.startsWith("cfg")
+    val options = entries
+        .filterNot { it.key.startsWith(".") }
+        .associate { (key, value) -> key to value.toDisplayString() }
+    return UciSection(id = sectionId, type = type, isAnonymous = anonymous, options = options)
+}
+
+private fun JsonElement.toDisplayString(): String = when (this) {
+    is JsonArray -> joinToString(" ") { it.jsonPrimitive.contentOrNull ?: "" }
+    is JsonPrimitive -> contentOrNull ?: toString()
+    else -> toString()
+}
+
 /** One entry from `service list`: `{"instances": {"instance1": {"running": true, "pid": 123}, ...}}`. */
 internal fun JsonObject.toServiceStatus(name: String): ServiceStatus {
     val instances = this["instances"]?.jsonObject?.values.orEmpty().map { it.jsonObject }
@@ -532,8 +795,9 @@ private fun SshExecClient.ExecResult.toActionResult() = PackageActionResult(succ
 /**
  * Splits an `apk` "name-version" token at the first hyphen directly followed by a digit — apk
  * package names essentially never have a digit right after a `-`, so this is where the version
- * starts (handles both a `-r0` release suffix and a bare `-1` kernel/kmod-style suffix).
- * Not verified against a live 24.10+/apk-migrated router — flag and fix if real output differs.
+ * starts (handles both a `-r0` release suffix and a bare `-1` kernel/kmod-style suffix). Matches
+ * Alpine apk-tools' documented `<name>-<version>-r<release>` token format; not verified against a
+ * live 24.10+/apk-migrated router — check it against real output before relying on it further.
  */
 internal fun parseApkNameVersion(token: String): Pair<String, String>? {
     val splitIndex = token.indices.firstOrNull { i -> token[i] == '-' && i + 1 < token.length && token[i + 1].isDigit() }
@@ -550,7 +814,10 @@ internal fun parseApkListInstalled(output: String): List<Package> =
         .mapNotNull { token -> parseApkNameVersion(token)?.let { (name, version) -> Package(name, version) } }
         .toList()
 
-/** `apk list --upgradable` — same leading token, but it's the *candidate* (new) version. */
+/**
+ * `apk list --upgradable` — same leading token, but it's the *candidate* (new) version, e.g.
+ * `apk-tools-2.14.4-r1 x86_64 {apk-tools} (GPL-2.0-only) [upgradable from: apk-tools-2.14.0-r2]`.
+ */
 internal fun parseApkListUpgradable(output: String): Map<String, String> =
     output.lineSequence()
         .mapNotNull { line -> line.trim().substringBefore(' ').takeIf { it.isNotBlank() } }

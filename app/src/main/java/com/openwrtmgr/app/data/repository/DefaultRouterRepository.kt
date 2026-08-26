@@ -18,7 +18,7 @@ class DefaultRouterRepository(
     private val credentialStore: CredentialStore,
 ) : RouterRepository {
 
-    // One authenticated client per router, kept for the app's lifetime (section 36 — independent per-router state).
+    // One authenticated client per router, kept for the app's lifetime (independent per-router state).
     // ponytail: plain in-memory map behind a mutex; promote to a real cache/eviction policy only if router count grows large.
     private val clients = mutableMapOf<Long, OpenWrtClient>()
     private val clientsLock = Mutex()
@@ -30,6 +30,13 @@ class DefaultRouterRepository(
         val id = dao.upsert(profile.toEntity())
         credentialStore.savePassword(id, password)
         return id
+    }
+
+    override suspend fun updateProfile(profile: RouterProfile, password: String?) {
+        dao.update(profile.toEntity())
+        if (password != null) credentialStore.savePassword(profile.id, password)
+        // Connection details may have changed — drop the cached client so the next use re-authenticates.
+        clientsLock.withLock { clients.remove(profile.id) }
     }
 
     override suspend fun deleteProfile(profile: RouterProfile) {
@@ -49,7 +56,13 @@ class DefaultRouterRepository(
 
             val entity = dao.getById(profileId) ?: error("Unknown router profile $profileId")
             val password = credentialStore.getPassword(profileId) ?: error("No saved credentials for this router")
-            val client = UbusHttpClient(entity.toDomain())
+            val client = UbusHttpClient(
+                profile = entity.toDomain(),
+                onSshHostKeyLearned = { fingerprint ->
+                    val current = dao.getById(profileId)
+                    if (current != null) dao.update(current.copy(sshHostKeyFingerprint = fingerprint))
+                },
+            )
             client.authenticate(entity.username, password).getOrThrow()
             clients[profileId] = client
             client

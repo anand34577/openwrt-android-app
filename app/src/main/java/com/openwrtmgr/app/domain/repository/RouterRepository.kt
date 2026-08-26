@@ -7,6 +7,9 @@ import kotlinx.coroutines.flow.Flow
 interface RouterRepository {
     fun observeProfiles(): Flow<List<RouterProfile>>
     suspend fun addProfile(profile: RouterProfile, password: String): Long
+
+    /** Updates a saved profile's fields; pass [password] to also change the stored credential. */
+    suspend fun updateProfile(profile: RouterProfile, password: String?)
     suspend fun deleteProfile(profile: RouterProfile)
     suspend fun markConnected(profileId: Long)
 
