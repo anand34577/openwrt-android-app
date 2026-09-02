@@ -1,7 +1,33 @@
+# Gradle
 .gradle/
-app/build/
 build/
-.idea/
+app/build/
+gradle-app.setting
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+
+# Local configuration file (contains SDK path)
 local.properties
+
+# Android Studio / IntelliJ
+.idea/
 *.iml
+*.ipr
+*.iws
+.navigation/
+captures/
+.externalNativeBuild/
+.cxx/
 .kotlin/
+
+# Keystores
+*.jks
+*.keystore
+
+# Log/OS files
+*.log
+.DS_Store
+Thumbs.db
+
+# Personal / machine-local scripts (not part of the project)
+Claude-Account-1.cmd

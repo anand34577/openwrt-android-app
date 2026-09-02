@@ -139,16 +139,25 @@ No Hilt: the DI graph is three objects (`AppDatabase`, `CredentialStore`,
 
 ## Building
 
-Gradle wrapper jar isn't checked in (binary, can't be authored here). Either:
-1. Open the project folder in Android Studio — it regenerates the wrapper automatically, or
-2. Run `gradle wrapper` once with a local Gradle 8.7+ install.
-
-Then:
 ```bash
 ./gradlew assembleDebug
 ./gradlew test        # UbusParsingTest + ClientMergeTest
 ```
 
+Or just open the project folder in Android Studio (Gradle sync handles the
+rest).
+
 Release builds (`minifyEnabled true`) have R8 keep rules for sshj's
 reflection-based crypto provider lookup in `proguard-rules.pro` — not yet
 run through an actual `assembleRelease` to confirm they're sufficient.
+
+## Contributing
+
+Issues and pull requests are welcome. If you're touching a screen that talks
+to a real router, please note in the PR description whether you verified the
+change against live hardware or a specific OpenWrt version — several gaps
+above exist precisely because that verification hasn't happened yet.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
