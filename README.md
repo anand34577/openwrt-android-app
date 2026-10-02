@@ -1,163 +1,55 @@
-# OpenWrt Manager (Android)
+# OpenWrt Manager
 
-Native Android admin console for OpenWrt routers. Talks to the router over
-**ubus-over-HTTP JSON-RPC** (the same bus LuCI itself uses, via
-`uhttpd-mod-ubus`) for everything ubus can do, and an **SSH exec/SFTP**
-transport for the things it can't (package management, service control,
-config backup/restore) — no HTML scraping, no WebView, no LuCI dependency.
+A native Android app for looking after your OpenWrt router from your phone.
 
-## Status
+It talks to the router the same way LuCI does, over the ubus JSON-RPC interface served by `uhttpd`. There is nothing to install on the router, no SSH, and no web view: you sign in with your normal router login and get a proper mobile interface.
 
-Bottom navigation once a router is selected: **Dashboard / Devices /
-Firewall / System / More**. Everything below works end-to-end against the
-ubus/UCI/SSH surface as documented; anything not verified against a live
-router is flagged explicitly, either here or in a code comment at the call
-site.
+## What you can do
 
-**Connect**
-- Add, edit, or delete a router profile; address field prefilled from the
-  phone's current gateway.
-- Password in `EncryptedSharedPreferences` (Android Keystore AES-256), never
-  plaintext.
-- `session.login` auth, with silent re-login on session expiry — a cached
-  client is reused for the app's lifetime.
-- Capability-gated UI via ubus `list` — a wired-only router just doesn't get
-  a Wi-Fi card, no error, no dead UI.
-- SSH connections are host-key pinned on first use (TOFU): the fingerprint is
-  stored per profile and any later mismatch is a hard failure surfaced to the
-  user, not a silent re-pin.
+**Overview.** Live download and upload, CPU and memory, WAN details, Ethernet port status, interfaces, and Wi-Fi at a glance.
 
-**Dashboard**
-- Real `system.info`/`system.board`/`network.interface.dump`.
-- Wi-Fi radios from `network.wireless status` enriched with `iwinfo.info`
-  (live signal/bitrate).
-- Reboot, per-interface up/down, per-radio enable/disable — each behind a
-  confirmation dialog naming the actual consequence.
+**Devices.** See everyone on the network with their signal, address and data use. Open a device to block its internet, pause it on a schedule, give it a fixed IP and name, forward a port to it, watch its live traffic, or wake it up.
 
-**Devices**
-- DHCP leases (`/tmp/dhcp.leases` via ubus `file.read`) merged with
-  `iwinfo.assoclist` Wi-Fi associations by MAC, grouped into Wireless/Wired
-  sections with a plain-language signal-quality label.
+**Wi-Fi.** Turn radios on and off, change channels and power, edit or add networks, create a guest network, share a network by QR code, schedule Wi-Fi hours, and scan for nearby networks.
 
-**Firewall** (Port Forwards / Traffic Rules / Zones tabs)
-- Full CRUD on `config redirect` (port forwards), `config rule` (traffic
-  rules), and `config zone` (zones) via the `uci` ubus object — the actual
-  UCI representation OpenWrt has for all three, there's no separate API.
-- A partial save/add failure cleans up its orphan UCI section instead of
-  leaving one behind.
-- "Apply changes" reloads the live firewall over SSH
-  (`/etc/init.d/firewall reload`) — edits persist to UCI immediately but
-  don't take effect until this (or a reboot) runs, which the in-app banner
-  states plainly.
-- VLAN devices (`config device`, 802.1q/ad) are listed read-only under
-  Zones — full VLAN authoring is a larger, separate effort.
+**Network.** Add, edit and delete interfaces. Manage firewall zones, port forwards, traffic rules and your own firewall script. Manage DHCP pools, static leases and local DNS records. View routes.
 
-**System**
-- Services: real start/stop/restart via `/etc/init.d/<name> <verb>` over
-  SSH, each behind a confirmation dialog.
-- System log via ubus `log read` (procd's syslog ring buffer), monospace,
-  severity-colored using theme-aware colors (not fixed hex).
-- Packages via `apk` over SSH (OpenWrt replaced `opkg` with Alpine's `apk`
-  as of the 24.10 release line — this targets `apk` only). Install/remove/
-  `apk update`, each confirmed first, output shown after, never silent.
-  ⚠️ The `apk list --installed`/`--upgradable` output parser
-  (`parseApkNameVersion` etc. in `UbusHttpClient.kt`) matches Alpine
-  apk-tools' documented format and is unit-tested against it, but **not
-  verified against a live 24.10+/apk-migrated router** — check it against
-  real output before relying on it.
+**System.** Hostname, time zone and clock, password, services, packages, backup and restore, firmware upgrade, SSH keys, startup script, scheduled tasks (cron), router LEDs, and add-on apps such as DDNS, SQM or UPnP when they are installed. For troubleshooting there are the system log, processes, live connections, storage, ping, traceroute and DNS lookup, a raw UCI editor, and a ubus API console.
 
-**More**
-- **Network Diagnostics**: ping and DNS lookup run *from the phone itself*
-  (traceroute attempted if the device happens to ship a binary for it, with
-  a clear fallback message since most Android builds don't).
-- **DNS Management**: static dnsmasq hostname → IP records (`config domain`
-  sections in the `dhcp` UCI config).
-- **Backup & Restore**: `sysupgrade -b`/`-r` over SSH+SFTP, with the user
-  picking the file location via the system file picker (Storage Access
-  Framework) — no app-private storage to manage.
-- **UCI Raw Editor**: generic get/set/add/delete on any UCI config section,
-  for anything the purpose-built screens don't cover. Clearly framed as
-  advanced/dangerous — no schema validation, no undo beyond re-editing.
+Changes to network settings are applied with an automatic rollback, so a mistake that cuts the app off from the router reverts itself.
 
-## Not built yet
+The app has several colour themes, including light, dark and AMOLED, and can follow your phone's setting.
 
-- **SSH terminal**: a persistent interactive shell + emulator is a
-  meaningfully bigger piece of work than the single-shot `SshExecClient`
-  calls everything above uses; intentionally out of scope for now.
-- **Firmware flashing**: `sysupgrade` image flashing can brick a router; it
-  deserves a dedicated pass with real safeguards (verify-before-flash,
-  explicit multi-step confirmation), not a same-shape add-on to Backup.
-- **Full VLAN authoring**: only read-only listing exists today (see above).
-- Accessibility pass, tablet/foldable layouts, offline mock backend for
-  dev, full instrumented UI test suite.
-- mDNS router discovery (stock OpenWrt doesn't run avahi, so it'd rarely
-  find anything — gateway auto-detect covers the same case for near-zero
-  cost).
+## Your router
 
-## Requirements on the router
+- OpenWrt with LuCI (or at least `uhttpd` with `uhttpd-mod-ubus` and `rpcd`).
+- A login that is allowed to use ubus. The default `root` account works.
+- Some features need extra packages on the router and show a clear message if they are missing, for example `etherwake` for Wake on LAN.
+- HTTPS is supported. The certificate is pinned the first time you connect, and the app refuses to connect if it later changes.
 
-- OpenWrt with LuCI installed (brings `uhttpd-mod-ubus` by default), or
-  `uhttpd-mod-ubus` installed standalone.
-- A user with full `ubus` ACL rights (the default `root` login has these) —
-  specifically `session`, `system`, `network.interface`, `network.wireless`,
-  `iwinfo`, `file` (read `/tmp/dhcp.leases`), `uci`, `service`, and `log`.
-- dnsmasq as the DHCP server for the Devices screen to show leases (an
-  odhcpd-only setup will just show Wi-Fi-associated clients, no IP/hostname).
-- dropbear or openssh-server reachable on the profile's SSH port (default 22,
-  same username/password as the ubus login) for Packages, service control,
-  and Backup/Restore.
-- `apk` as the package manager (OpenWrt 24.10+). An `opkg`-only router will
-  have the Packages screen fail every call — not handled/detected yet.
+Your password is stored on the phone only, encrypted with the Android Keystore, and only if you choose to remember it. The app never sends anything anywhere except to the router you add.
 
-## Architecture
+## Install
 
-```
-UI (Compose) → ViewModel → RouterRepository → OpenWrtClient (interface)
-                                                    └── UbusHttpClient (ubus-over-HTTP)
-                                                          └── SshExecClient (SSH exec + SFTP)
-```
+Download the latest APK from the [Releases](../../releases) page. Each release lists a SHA-256 checksum next to the file, and every APK is signed with the same key, so updates install over the top of earlier versions.
 
-`OpenWrtClient` is the only thing the UI/domain layer knows about. Right now
-`UbusHttpClient` is the sole implementation, and it reaches for SSH
-internally only for the operations ubus has no object for at all — package
-management, service start/stop/restart, firewall reload, and backup/restore.
-`RouterCapabilities` comes from ubus `list` (the objects actually visible to
-the session) — features get hidden per router, not per app version.
+Requires Android 8.0 or newer.
 
-No Hilt: the DI graph is three objects (`AppDatabase`, `CredentialStore`,
-`RouterRepository`), wired by hand in `OpenWrtManagerApp.onCreate`.
+## Build it yourself
 
-**Known gaps, stated rather than hidden:**
-- A `saveTrafficRule` update that clears a previously-set `dest` zone
-  (switching a rule to target "this router") doesn't unset the old UCI
-  option — `uci set` only adds/updates given keys, it doesn't remove ones
-  left out. Low-severity; delete-and-recreate works around it.
-- No live-router verification this pass (the apk parser, UCI section
-  option formatting for list-type values, and the backup/restore SFTP path
-  are all written to documented OpenWrt/sshj behavior, not confirmed against
-  real hardware).
-
-## Building
+You need JDK 17 or newer and the Android SDK.
 
 ```bash
-./gradlew assembleDebug
-./gradlew test        # UbusParsingTest + ClientMergeTest
+./gradlew assembleDebug      # debug APK in app/build/outputs/apk/debug
+./gradlew testDebugUnitTest  # unit tests
 ```
 
-Or just open the project folder in Android Studio (Gradle sync handles the
-rest).
-
-Release builds (`minifyEnabled true`) have R8 keep rules for sshj's
-reflection-based crypto provider lookup in `proguard-rules.pro` — not yet
-run through an actual `assembleRelease` to confirm they're sufficient.
+Release builds are signed in CI. Without the signing environment, `assembleRelease` produces an unsigned APK, which is what you want for a fork.
 
 ## Contributing
 
-Issues and pull requests are welcome. If you're touching a screen that talks
-to a real router, please note in the PR description whether you verified the
-change against live hardware or a specific OpenWrt version — several gaps
-above exist precisely because that verification hasn't happened yet.
+Issues and pull requests are welcome. If a change talks to a router, it helps to mention which OpenWrt version and device you tried it on.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

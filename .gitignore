@@ -29,5 +29,5 @@ captures/
 .DS_Store
 Thumbs.db
 
-# Personal / machine-local scripts (not part of the project)
-Claude-Account-1.cmd
+# Local developer tooling and anything it produces (can contain live router data)
+tools/
