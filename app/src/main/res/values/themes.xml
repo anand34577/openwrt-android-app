@@ -1,4 +1,8 @@
 <resources>
-    <!-- Compose owns theming via MaterialTheme; this is just the pre-Compose window bootstrap theme. -->
-    <style name="Theme.OpenWrtManager" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- Compose draws everything; this only keeps the window dark before the first frame. -->
+    <style name="Theme.OpenWrtManager" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/ops_bg</item>
+        <item name="android:statusBarColor">@color/ops_bg</item>
+        <item name="android:navigationBarColor">@color/ops_bg</item>
+    </style>
 </resources>
