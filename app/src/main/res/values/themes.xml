@@ -1,0 +1,8 @@
+<resources>
+    <!-- Compose draws everything; this only keeps the window dark before the first frame. -->
+    <style name="Theme.OpenWrtManager" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/ops_bg</item>
+        <item name="android:statusBarColor">@color/ops_bg</item>
+        <item name="android:navigationBarColor">@color/ops_bg</item>
+    </style>
+</resources>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android's network-security-config domain matcher takes hostnames/IP
+  literals only, not CIDR ranges — so per-subnet cleartext allowlisting
+  (what section 5 implies) isn't expressible here. Router admin UIs are
+  routinely plain-HTTP on the LAN, and the router address is arbitrary
+  user input we can't enumerate ahead of time, so cleartext is allowed
+  app-wide; HTTPS is still used whenever the profile is configured for it.
+  ponytail: revisit if/when a per-profile "require HTTPS" toggle (section 6)
+  should hard-block cleartext for that profile at the OkHttp layer instead.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

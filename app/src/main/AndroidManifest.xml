@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Talking to a router the user explicitly configured, on their own LAN/VPN -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application
+        android:name=".OpenWrtApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.OpenWrtManager"
+        android:networkSecurityConfig="@xml/network_security_config">
+
+        <activity
+            android:name=".MainActivity"
+            android:windowSoftInputMode="adjustResize"
+            android:exported="true"
+            android:theme="@style/Theme.OpenWrtManager">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

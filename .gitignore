@@ -1,0 +1,33 @@
+# Gradle
+.gradle/
+build/
+app/build/
+gradle-app.setting
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+
+# Local configuration file (contains SDK path)
+local.properties
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+.navigation/
+captures/
+.externalNativeBuild/
+.cxx/
+.kotlin/
+
+# Keystores
+*.jks
+*.keystore
+
+# Log/OS files
+*.log
+.DS_Store
+Thumbs.db
+
+# Local developer tooling and anything it produces (can contain live router data)
+tools/
