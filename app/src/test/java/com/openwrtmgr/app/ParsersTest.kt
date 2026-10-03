@@ -118,6 +118,16 @@ class ParsersTest {
         assertEquals(mapOf("192.168.1.10" to 300L, "192.168.1.20" to 75L), conntrackDeltaByIp(before, after, setOf("192.168.1.10", "192.168.1.20")))
     }
 
+    @Test fun rankingMixesDevicesWithAndWithoutTotals() {
+        // Some devices have no nlbwmon total; comparing a Long total against an Int fallback used to throw.
+        fun dev(mac: String) = Device(mac, mac, null, emptyList(), null, null, null, null, false, DeviceKind.UNKNOWN)
+        val devices = listOf(dev("AA:00:00:00:00:01"), dev("AA:00:00:00:00:02"), dev("AA:00:00:00:00:03"))
+        val usage = Usage("2026-10-01", mapOf("AA:00:00:00:00:02" to HostUsage(5_000_000_000, 1, 1)))
+        val rates = mapOf("AA:00:00:00:00:03" to com.openwrtmgr.app.ui.LiveRate(10f, 1f))
+        assertEquals(listOf("AA:00:00:00:00:03", "AA:00:00:00:00:02", "AA:00:00:00:00:01"),
+            com.openwrtmgr.app.ui.busiestFirst(devices, rates, usage).map { it.mac })
+    }
+
     @Test fun hostapdRatesAreAlreadyKbps() {
         val s = parseHostapdClients("phy1-ap0", j("""{"clients":{"aa:bb:cc:dd:ee:ff":{"rate":{"rx":866700,"tx":650000},"bytes":{"rx":1,"tx":2},"signal":-50}}}""")).single()
         assertEquals(866700L, s.rxRate); assertEquals(650000L, s.txRate)
