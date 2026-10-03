@@ -12,8 +12,8 @@ android {
         applicationId = "com.openwrtmgr.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 6
-        versionName = "2.2.0"
+        versionCode = 7
+        versionName = "2.2.1"
     }
 
     // Release signing is injected by CI through the environment, so no key material ever lives in the repo.
