@@ -94,11 +94,13 @@ fun parseInterfaces(dump: JsonObject): List<Iface> = dump["interface"].arr().map
 }
 
 /** `network.device status` (no name) → per-netdev counters, for live throughput. */
-data class DevStats(val name: String, val up: Boolean, val rx: Long, val tx: Long, val speed: String?, val mac: String?)
+/** [up] is netifd's admin state; [carrier] is whether a link is actually present (cable plugged in). */
+data class DevStats(val name: String, val up: Boolean, val rx: Long, val tx: Long, val speed: String?, val mac: String?, val carrier: Boolean = up)
 
 fun parseDeviceStats(j: JsonObject): Map<String, DevStats> = j.mapValues { (name, v) ->
     val o = v.obj(); val s = o["statistics"].obj()
-    DevStats(name, o["up"].bool() ?: false, s["rx_bytes"].long() ?: 0, s["tx_bytes"].long() ?: 0, o["speed"].str(), o["macaddr"].str())
+    val up = o["up"].bool() ?: false
+    DevStats(name, up, s["rx_bytes"].long() ?: 0, s["tx_bytes"].long() ?: 0, o["speed"].str(), o["macaddr"].str(), o["carrier"].bool() ?: up)
 }
 
 // ---------------- Wireless ----------------
@@ -178,6 +180,18 @@ fun encryptionLabel(raw: String): String = when (raw.substringBefore('+')) {
     else -> raw
 }
 
+/** rpcd's scan `encryption` is {enabled, wpa:[1,2,3], authentication:[psk,sae,802.1x], wep:[...]}; LuCI-style label. */
+fun scanEncryption(enc: JsonObject): String {
+    enc["description"].str()?.let { return it }
+    if (enc["enabled"].bool() != true) return "Open"
+    val wpa = enc["wpa"].arr().mapNotNull { it.int() }
+    if (wpa.isEmpty()) return if (enc["wep"].arr().isNotEmpty()) "WEP" else "Encrypted"
+    val auth = enc["authentication"].strList()
+    if ("802.1x" in auth) return "Enterprise"
+    if (auth == listOf("owe")) return "OWE"
+    return wpa.sorted().joinToString("/") { if (it == 1) "WPA" else "WPA$it" }
+}
+
 data class ScanResult(val ssid: String, val bssid: String, val channel: Int?, val signal: Int?, val quality: Int?, val encryption: String)
 
 fun parseScan(j: JsonObject): List<ScanResult> = j["results"].arr().map { e ->
@@ -186,7 +200,7 @@ fun parseScan(j: JsonObject): List<ScanResult> = j["results"].arr().map { e ->
         ssid = o["ssid"].str() ?: "(hidden)", bssid = o["bssid"].str().orEmpty(), channel = o["channel"].int(),
         signal = o["signal"].int(),
         quality = o["quality"].int()?.let { q -> o["quality_max"].int()?.takeIf { it > 0 }?.let { q * 100 / it } },
-        encryption = enc["description"].str() ?: if (enc["enabled"].bool() == true) "Encrypted" else "Open",
+        encryption = scanEncryption(enc),
     )
 }.sortedByDescending { it.signal ?: -200 }
 
@@ -197,19 +211,22 @@ data class Station(
     val rxBytes: Long?, val txBytes: Long?, val connectedSec: Long?,
 )
 
-/** `hostapd.<if> get_clients` → stations. Rates are kbit/s (hostapd reports in 100kbit units). */
+/** `hostapd.<if> get_clients` → stations. hostapd already converts rates to kbit/s. */
 fun parseHostapdClients(ifname: String, j: JsonObject): List<Station> = j["clients"].obj().map { (mac, v) ->
     val o = v.obj()
     Station(
         mac = mac.uppercase(), ifname = ifname, signal = o["signal"].int(),
-        rxRate = o["rate"].obj()["rx"].long()?.times(100), txRate = o["rate"].obj()["tx"].long()?.times(100),
+        rxRate = o["rate"].obj()["rx"].long(), txRate = o["rate"].obj()["tx"].long(),
         rxBytes = o["bytes"].obj()["rx"].long(), txBytes = o["bytes"].obj()["tx"].long(),
         connectedSec = o["connected_time"].long(),
     )
 }
 
-/** `iwinfo assoclist` fallback when hostapd objects aren't exposed. */
-fun parseAssoclist(ifname: String, j: JsonObject): List<Station> = j["results"].arr().map { e ->
+/**
+ * `iwinfo assoclist`, the fallback when hostapd objects aren't exposed. Asked for one `mac`,
+ * rpcd returns that station's fields at the top level instead of a `results` array.
+ */
+fun parseAssoclist(ifname: String, j: JsonObject): List<Station> = (j["results"] as? kotlinx.serialization.json.JsonArray ?: listOfNotNull(j.takeIf { "mac" in it })).map { e ->
     val o = e.obj()
     Station(
         mac = o["mac"].str().orEmpty().uppercase(), ifname = ifname, signal = o["signal"].int(),
@@ -472,6 +489,7 @@ fun parseServices(j: JsonObject): List<Service> = j.map { (name, v) ->
     Service(name, o["enabled"].bool() ?: false, o["running"].bool() ?: false, o["start"].int())
 }.sortedBy { it.name }
 
+/** [time] is epoch milliseconds, as logd reports it. */
 data class LogLine(val time: Long, val priority: Int, val source: String, val message: String)
 
 fun parseLog(j: JsonObject): List<LogLine> = j["log"].arr().map { e ->
@@ -481,17 +499,27 @@ fun parseLog(j: JsonObject): List<LogLine> = j["log"].arr().map { e ->
     LogLine(o["time"].long() ?: 0, (o["priority"].int() ?: 6) and 7, src?.groupValues?.get(1).orEmpty(), if (src != null) msg.substring(src.range.last + 1) else msg)
 }
 
+/** busybox top's VSZ column: KiB, switching to "12m" / "1g" for big processes. */
+fun kib(v: String?): Long {
+    val t = v?.trim()?.lowercase() ?: return 0
+    val mult = when (t.lastOrNull()) { 'm' -> 1024L; 'g' -> 1024L * 1024; else -> 1L }
+    return ((t.trimEnd('m', 'g').toDoubleOrNull() ?: 0.0) * mult).toLong()
+}
+
 data class Proc(val pid: Int, val user: String, val cpu: Double, val mem: Double, val vsz: Long, val command: String)
 
 fun parseProcesses(j: JsonObject): List<Proc> = j["result"].arr().map { e ->
     val o = e.obj()
     Proc(o["PID"].int() ?: 0, o["USER"].str().orEmpty(), o["%CPU"].str()?.trimEnd('%')?.toDoubleOrNull() ?: 0.0,
-        o["%MEM"].str()?.trimEnd('%')?.toDoubleOrNull() ?: 0.0, o["VSZ"].long() ?: 0, o["COMMAND"].str().orEmpty())
+        o["%MEM"].str()?.trimEnd('%')?.toDoubleOrNull() ?: 0.0, kib(o["VSZ"].str()), o["COMMAND"].str().orEmpty())
 }.sortedByDescending { it.cpu }
 
 data class Pkg(val name: String, val version: String, val description: String, val size: Long, val installed: Boolean)
 
-/** `package-manager-call list-installed|list-available`: apk JSON array, or opkg "name - ver - desc" text. */
+/**
+ * `package-manager-call list-installed|list-available`: an apk JSON array, or opkg's control
+ * stanzas ("Package: x" / "Version: y" / ... separated by blank lines; continuation lines indented).
+ */
 fun parsePackages(text: String, installed: Boolean): List<Pkg> {
     val t = text.trim()
     if (t.startsWith("[")) {
@@ -502,10 +530,15 @@ fun parsePackages(text: String, installed: Boolean): List<Pkg> {
                 installed || o["status"].strList().contains("installed"))
         }
     }
-    return t.lineSequence().mapNotNull { line ->
-        val p = line.split(" - ", limit = 4)
-        if (p.size < 2) null else Pkg(p[0].trim(), p[1].trim(), p.getOrNull(3)?.trim() ?: p.getOrNull(2)?.trim().orEmpty(), p.getOrNull(2)?.trim()?.toLongOrNull() ?: 0, installed)
-    }.toList()
+    return t.split(Regex("\\n\\s*\\n")).mapNotNull { block ->
+        val f = block.lineSequence().filter { it.isNotEmpty() && !it[0].isWhitespace() && ':' in it }
+            .associate { it.substringBefore(':').trim().lowercase() to it.substringAfter(':').trim() }
+        val name = f["package"] ?: return@mapNotNull null
+        val status = f["status"]?.split(Regex("\\s+")).orEmpty()
+        if (installed && status.isNotEmpty() && status.getOrNull(2) != "installed") return@mapNotNull null // not-installed leftovers
+        Pkg(name, f["version"].orEmpty(), f["description"].orEmpty(),
+            f["installed-size"]?.toLongOrNull() ?: f["size"]?.toLongOrNull() ?: 0, installed || status.getOrNull(2) == "installed")
+    }
 }
 
 data class UciSection(val name: String, val type: String, val anonymous: Boolean, val options: Map<String, String>)
@@ -521,7 +554,18 @@ fun parseUciConfig(uci: JsonObject): List<UciSection> = uci.entries.sortedBy { i
 data class Conn(
     val proto: String, val src: String, val sport: String, val dst: String, val dport: String,
     val bytes: Long, val packets: Long,
-)
+) {
+    val flow get() = "$proto $src:$sport $dst:$dport"
+}
+
+/**
+ * Bytes moved between two conntrack snapshots, counted per flow. LuCI drops a connection from
+ * the list once it closes, so comparing plain totals would shrink and read as no traffic.
+ */
+fun conntrackDelta(before: List<Conn>, after: List<Conn>): Long {
+    val prev = before.associate { it.flow to it.bytes }
+    return after.sumOf { (it.bytes - (prev[it.flow] ?: 0)).coerceAtLeast(0) }
+}
 
 /** `luci getConntrackList` → active NAT/connection-tracking entries. */
 fun parseConntrack(j: JsonObject): List<Conn> = j["result"].arr().map { e ->
@@ -538,7 +582,7 @@ data class Port(val device: String, val role: String, val up: Boolean, val speed
 fun parsePorts(ports: JsonObject, stats: Map<String, DevStats>): List<Port> = ports["result"].arr().mapNotNull { e ->
     val o = e.obj(); val dev = o["device"].str() ?: return@mapNotNull null
     val s = stats[dev]
-    Port(dev, o["role"].str().orEmpty(), s?.up == true && s.speed?.startsWith("-") != true, s?.speed, s?.rx ?: 0, s?.tx ?: 0)
+    Port(dev, o["role"].str().orEmpty(), s?.carrier == true && s.speed?.startsWith("-") != true, s?.speed, s?.rx ?: 0, s?.tx ?: 0)
 }
 
 data class Mount(val device: String, val mount: String, val size: Long, val free: Long)

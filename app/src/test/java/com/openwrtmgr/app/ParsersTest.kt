@@ -56,10 +56,9 @@ class ParsersTest {
         assertEquals(DeviceKind.PHONE, d.kind)
     }
 
-    @Test fun hostapdRatesAreKbps() {
-        val s = parseHostapdClients("phy0-ap0", j("""{"clients":{"aa:bb:cc:dd:ee:ff":{"signal":-60,"rate":{"rx":1730,"tx":2402},"bytes":{"rx":5,"tx":6}}}}""")).single()
+    @Test fun hostapdClientMacIsUppercased() {
+        val s = parseHostapdClients("phy0-ap0", j("""{"clients":{"aa:bb:cc:dd:ee:ff":{"signal":-60,"rate":{"rx":173000,"tx":240200},"bytes":{"rx":5,"tx":6}}}}""")).single()
         assertEquals("AA:BB:CC:DD:EE:FF", s.mac)
-        assertEquals(173000L, s.rxRate)
     }
 
     @Test fun firewallAndDhcp() {
@@ -84,8 +83,41 @@ class ParsersTest {
     @Test fun apkJsonAndOpkgPackages() {
         val apk = parsePackages("""[{"name":"curl","version":"8.9-r1","description":"URL tool","installed-size":1234,"status":["installed"]}]""", false)
         assertTrue(apk.single().installed)
-        val opkg = parsePackages("curl - 8.4.0-1 - 1234 - A URL tool\n", true)
-        assertEquals("8.4.0-1", opkg.single().version)
+        // list-installed on opkg is /usr/lib/opkg/status; list-available is the unpacked feed lists.
+        val status = "Package: curl\nVersion: 8.4.0-1\nDepends: libc, libcurl4\nStatus: install user installed\nArchitecture: aarch64_cortex-a53\nInstalled-Size: 1234\n\n" +
+            "Package: old-thing\nVersion: 1.0\nStatus: deinstall ok not-installed\n\n"
+        val opkg = parsePackages(status, true)
+        assertEquals(listOf("curl"), opkg.map { it.name })
+        assertEquals("8.4.0-1", opkg.single().version); assertEquals(1234L, opkg.single().size)
+        val feed = parsePackages("Package: tcpdump\nVersion: 4.99.4-1\nSize: 160000\nDescription: Network monitoring and data acquisition tool\n continued\n\nPackage: iperf3\nVersion: 3.17-1\n", false)
+        assertEquals(listOf("tcpdump", "iperf3"), feed.map { it.name })
+        assertEquals("Network monitoring and data acquisition tool", feed[0].description)
+        assertTrue(feed.none { it.installed })
+    }
+
+    @Test fun hostapdRatesAreAlreadyKbps() {
+        val s = parseHostapdClients("phy1-ap0", j("""{"clients":{"aa:bb:cc:dd:ee:ff":{"rate":{"rx":866700,"tx":650000},"bytes":{"rx":1,"tx":2},"signal":-50}}}""")).single()
+        assertEquals(866700L, s.rxRate); assertEquals(650000L, s.txRate)
+    }
+
+    @Test fun scanEncryptionLabels() {
+        assertEquals("Open", scanEncryption(j("""{"enabled":false}""")))
+        assertEquals("WPA2/WPA3", scanEncryption(j("""{"enabled":true,"wpa":[2,3],"authentication":["psk","sae"],"ciphers":["ccmp"]}""")))
+        assertEquals("WPA2", scanEncryption(j("""{"enabled":true,"wpa":[2],"authentication":["psk"]}""")))
+        assertEquals("Enterprise", scanEncryption(j("""{"enabled":true,"wpa":[2],"authentication":["802.1x"]}""")))
+        assertEquals("WEP", scanEncryption(j("""{"enabled":true,"wep":["open"]}""")))
+    }
+
+    @Test fun portLinkFollowsCarrierNotAdminState() {
+        val stats = parseDeviceStats(j("""{"lan1":{"up":true,"carrier":true,"speed":"1000F"},"lan2":{"up":true,"carrier":false}}"""))
+        val ports = parsePorts(j("""{"result":[{"role":"lan","device":"lan1"},{"role":"lan","device":"lan2"}]}"""), stats)
+        assertEquals(listOf(true, false), ports.map { it.up })
+    }
+
+    @Test fun processVszUnits() {
+        assertEquals(1234L, kib("1234")); assertEquals(12L * 1024, kib("12m")); assertEquals(0L, kib(null))
+        val p = parseProcesses(j("""{"result":[{"PID":"1","USER":"root","VSZ":"12m","%MEM":"1%","%CPU":"0%","COMMAND":"/sbin/procd"}]}""")).single()
+        assertEquals(12L * 1024, p.vsz)
     }
 
     @Test fun wifiQrEscapesSpecialChars() {
@@ -119,5 +151,21 @@ class ParsersTest {
     @Test fun logSourceSplit() {
         val l = parseLog(j("""{"log":[{"msg":"dnsmasq[123]: query A","priority":30,"time":1}]}""")).single()
         assertEquals("dnsmasq", l.source); assertEquals("query A", l.message); assertEquals(6, l.priority)
+    }
+
+    @Test fun assoclistForOneMacIsTopLevel() {
+        // rpcd answers `assoclist {device, mac}` with the station itself, no "results" array.
+        val one = parseAssoclist("phy1-ap0", j("""{"mac":"F0:18:98:6B:22:C4","signal":-46,"rx":{"bytes":100,"rate":866700},"tx":{"bytes":900,"rate":866700}}""")).single()
+        assertEquals("F0:18:98:6B:22:C4", one.mac); assertEquals(100L, one.rxBytes); assertEquals(900L, one.txBytes)
+        assertEquals(2, parseAssoclist("phy1-ap0", j("""{"results":[{"mac":"aa:bb:cc:dd:ee:01"},{"mac":"aa:bb:cc:dd:ee:02"}]}""")).size)
+        assertTrue(parseAssoclist("phy1-ap0", j("{}")).isEmpty())
+    }
+
+    @Test fun conntrackDeltaSurvivesClosedFlows() {
+        fun c(sport: String, bytes: Long) = Conn("tcp", "192.168.1.101", sport, "1.1.1.1", "443", bytes, 1)
+        // A big flow closed (gone from the list) while another grew by 300 and a new one moved 50.
+        val before = listOf(c("40000", 1_000_000), c("40001", 1_000))
+        val after = listOf(c("40001", 1_300), c("40002", 50))
+        assertEquals(350L, conntrackDelta(before, after))
     }
 }

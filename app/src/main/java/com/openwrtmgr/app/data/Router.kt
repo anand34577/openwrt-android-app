@@ -154,19 +154,16 @@ class Router(val profile: RouterProfile, val ubus: Ubus, private val onPasswordC
     /** Full kernel routing table text (all tables), as LuCI shows it. */
     suspend fun routeTable(): String = runCatching { exec("/sbin/ip", "-4", "route", "show", "table", "all").stdout }.getOrDefault("")
 
-    /**
-     * Cumulative (download, upload) bytes for one device. Wi-Fi: the station's link counters.
-     * Wired: summed conntrack bytes for its IP (both directions, so reported as download).
-     */
-    suspend fun deviceBytes(d: Device): Pair<Long, Long>? {
-        d.station?.let { s ->
-            val st = ubus.callOrNull("iwinfo", "assoclist", args("device" to s.ifname, "mac" to d.mac))?.let { parseAssoclist(s.ifname, it) }
-                ?.firstOrNull { it.mac == d.mac } ?: return null
-            return (st.txBytes ?: 0) to (st.rxBytes ?: 0) // router tx = device download
-        }
-        val ip = d.ipv4 ?: return null
-        return connections().filter { it.src == ip || it.dst == ip }.sumOf { it.bytes } to 0L
+    /** Cumulative (download, upload) bytes of a Wi-Fi device, from its station's link counters. */
+    suspend fun stationBytes(d: Device): Pair<Long, Long>? {
+        val s = d.station ?: return null
+        val st = ubus.callOrNull("iwinfo", "assoclist", args("device" to s.ifname, "mac" to d.mac))?.let { parseAssoclist(s.ifname, it) }
+            ?.firstOrNull { it.mac == d.mac } ?: return null
+        return (st.txBytes ?: 0) to (st.rxBytes ?: 0) // router tx = device download
     }
+
+    /** The tracked connections of one IP, for a wired device's traffic. */
+    suspend fun connectionsOf(ip: String): List<Conn> = connections().filter { it.src == ip || it.dst == ip }
 
     /** Deauthenticate a Wi-Fi client; [banMs] > 0 keeps it from reconnecting for that long. */
     suspend fun kick(ifname: String, mac: String, banMs: Int = 0) {
@@ -226,7 +223,8 @@ class Router(val profile: RouterProfile, val ubus: Ubus, private val onPasswordC
 
     suspend fun log(lines: Int = 300) = parseLog(ubus.call("log", "read", args("lines" to lines, "stream" to false, "oneshot" to true)))
 
-    suspend fun dmesg(): String = exec("/bin/dmesg").stdout
+    /** LuCI's ACL allows only `/bin/dmesg -r` (raw, with "<level>" prefixes), so strip those. */
+    suspend fun dmesg(): String = exec("/bin/dmesg", "-r").stdout.replace(Regex("(?m)^<\\d+>"), "")
 
     suspend fun processes() = parseProcesses(ubus.call("luci", "getProcessList"))
 
@@ -235,7 +233,9 @@ class Router(val profile: RouterProfile, val ubus: Ubus, private val onPasswordC
     suspend fun reboot() { ubus.call("system", "reboot") }
 
     suspend fun setPassword(newPassword: String) {
-        ubus.call("luci", "setPassword", args("username" to profile.username, "password" to newPassword))
+        // luci.setPassword reports a refused change in its result, with ubus status 0.
+        val ok = ubus.call("luci", "setPassword", args("username" to profile.username, "password" to newPassword))["result"].bool()
+        if (ok == false) throw RouterException("The router didn't accept the new password. Nothing was changed.")
         ubus.login(profile.username, newPassword) // future re-logins must use the new password
         onPasswordChanged(newPassword)
     }
@@ -428,6 +428,12 @@ class Router(val profile: RouterProfile, val ubus: Ubus, private val onPasswordC
 
     /** Wake-on-LAN via etherwake / wol, if installed and permitted by the session's rpcd ACL. */
     suspend fun wake(mac: String, device: String?) {
+        val etherwake = listOfNotNull("-D", device?.let { "-i" }, device, mac)
+        // luci-app-wol's own object is the only route LuCI's ACLs open to these tools.
+        for ((bin, a) in listOf("/usr/bin/etherwake" to etherwake, "/usr/bin/wakeonlan" to listOf(mac))) {
+            val r = ubus.callOrNull("luci.wol", "exec", args("name" to bin, "args" to a)) ?: continue
+            if ((r["code"].int() ?: 1) == 0) return
+        }
         val tries = listOf(
             "/usr/bin/etherwake" to listOfNotNull(device?.let { "-i" }, device, mac),
             "/usr/sbin/ether-wake" to listOfNotNull(device?.let { "-i" }, device, mac),
@@ -436,7 +442,7 @@ class Router(val profile: RouterProfile, val ubus: Ubus, private val onPasswordC
         for ((cmd, a) in tries) {
             try { exec(cmd, *a.toTypedArray()).orThrow("Wake-on-LAN"); return } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Throwable) { }
         }
-        throw RouterException("Couldn't send the wake packet. Install the 'etherwake' package (System → Packages), or wake it from LuCI.")
+        throw RouterException("Couldn't send the wake packet. Install 'luci-app-wol' (System → Packages), or wake it from LuCI.")
     }
 
     // ---------- exec ----------
