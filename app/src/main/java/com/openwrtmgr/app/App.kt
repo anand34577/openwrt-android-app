@@ -9,7 +9,13 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Row
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
@@ -118,7 +124,15 @@ private fun AppNav(app: OpenWrtApp) {
     LaunchedEffect(Unit) {
         if (!autoOpened) { autoOpened = true; app.profiles.autoOpen?.let { nav.navigate(Home(it)) } }
     }
-    NavHost(nav, startDestination = Routers, modifier = Modifier.fillMaxSize().background(Ops.bg)) {
+    // Shared-axis X: the new screen slides in a short way from the side it comes from while the
+    // old one drifts the other way and fades, so depth reads clearly without a full-width swipe.
+    NavHost(
+        nav, startDestination = Routers, modifier = Modifier.fillMaxSize().background(Ops.bg),
+        enterTransition = { slideInHorizontally(tween(420, easing = EmphasizedDecel)) { it / 5 } + fadeIn(tween(260, delayMillis = 60)) },
+        exitTransition = { slideOutHorizontally(tween(420, easing = EmphasizedDecel)) { -it / 10 } + fadeOut(tween(160)) },
+        popEnterTransition = { slideInHorizontally(tween(420, easing = EmphasizedDecel)) { -it / 10 } + fadeIn(tween(260, delayMillis = 60)) },
+        popExitTransition = { slideOutHorizontally(tween(320, easing = EmphasizedAccel)) { it / 5 } + fadeOut(tween(200)) },
+    ) {
         composable<Routers> {
             RoutersScreen(app.profiles, app.session, onOpen = { id -> nav.navigate(Home(id)) }, onAppearance = { nav.navigate(Appearance) })
         }
@@ -191,14 +205,19 @@ private fun RouterGate(session: Session, id: String, onExit: () -> Unit, content
             if (session.needsPassword(id)) askPassword = true // typed password was wrong: ask again
         }
     }
+    val phase = when { router != null -> 3; askPassword -> 1; error != null -> 2; else -> 0 }
+    AnimatedContent(
+        phase, label = "gate",
+        transitionSpec = { (fadeIn(tween(300, delayMillis = 60)) + scaleIn(tween(360, delayMillis = 60, easing = EmphasizedDecel), initialScale = 0.96f)).togetherWith(fadeOut(tween(120))) },
+    ) { p ->
     val r = router
-    if (r != null) {
+    if (p == 3 && r != null) {
         CompositionLocalProvider(LocalRouter provides r, content = content)
-        return
+        return@AnimatedContent
     }
     Box(Modifier.fillMaxSize().background(Ops.bg).padding(32.dp), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            if (askPassword) {
+            if (p == 1) {
                 val profile = (androidx.compose.ui.platform.LocalContext.current.applicationContext as OpenWrtApp).profiles.get(id)
                 var pw by remember { mutableStateOf("") }
                 var rememberPw by remember { mutableStateOf(false) }
@@ -212,18 +231,27 @@ private fun RouterGate(session: Session, id: String, onExit: () -> Unit, content
                     session.providePassword(id, pw, rememberPw); error = null; askPassword = false
                 }
                 GhostButton("Back to routers", onClick = onExit)
-            } else if (error == null) {
+            } else if (p == 0) {
                 CircularProgressIndicator(Modifier.size(28.dp), color = Ops.accent, strokeWidth = 2.dp)
                 Caps("Connecting")
             } else {
                 Caps("Connection failed", color = Ops.bad)
-                Text(error!!, color = Ops.muted, textAlign = TextAlign.Center, fontSize = 14.sp)
+                Text(error.orEmpty(), color = Ops.muted, textAlign = TextAlign.Center, fontSize = 14.sp)
                 Spacer(Modifier.height(4.dp))
                 PrimaryButton("Retry", Modifier.fillMaxWidth()) { attempt++ }
                 GhostButton("Back to routers", onClick = onExit)
             }
         }
     }
+    }
+}
+
+/** Material fade-through, nudged toward the tab you tapped so the bar and the page agree. */
+private fun tabTransition(from: Int, to: Int): ContentTransform {
+    val dir = if (to > from) 1 else -1
+    return (fadeIn(tween(240, delayMillis = 70)) + scaleIn(tween(300, delayMillis = 70, easing = EmphasizedDecel), initialScale = 0.97f) +
+        slideInHorizontally(tween(300, delayMillis = 70, easing = EmphasizedDecel)) { dir * it / 14 })
+        .togetherWith(fadeOut(tween(90)) + slideOutHorizontally(tween(160, easing = EmphasizedAccel)) { -dir * it / 24 })
 }
 
 private data class TabDef(val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector, val tint: androidx.compose.ui.graphics.Color)
@@ -241,7 +269,7 @@ private fun HomeTabs(onSwitchRouter: () -> Unit, onSignOut: () -> Unit) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     Column(Modifier.fillMaxSize().background(Ops.bg)) {
         Box(Modifier.weight(1f)) {
-            Crossfade(tab, label = "tab") { t ->
+            AnimatedContent(tab, label = "tab", transitionSpec = { tabTransition(initialState, targetState) }) { t ->
                 when (t) {
                     0 -> OverviewScreen(onSwitchRouter)
                     1 -> DevicesScreen()
