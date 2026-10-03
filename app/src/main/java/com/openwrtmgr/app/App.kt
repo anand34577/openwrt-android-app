@@ -13,6 +13,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
@@ -130,8 +131,10 @@ private fun AppNav(app: OpenWrtApp) {
         nav, startDestination = Routers, modifier = Modifier.fillMaxSize().background(Ops.bg),
         enterTransition = { slideInHorizontally(tween(420, easing = EmphasizedDecel)) { it / 5 } + fadeIn(tween(260, delayMillis = 60)) },
         exitTransition = { slideOutHorizontally(tween(420, easing = EmphasizedDecel)) { -it / 10 } + fadeOut(tween(160)) },
-        popEnterTransition = { slideInHorizontally(tween(420, easing = EmphasizedDecel)) { -it / 10 } + fadeIn(tween(260, delayMillis = 60)) },
-        popExitTransition = { slideOutHorizontally(tween(320, easing = EmphasizedAccel)) { it / 5 } + fadeOut(tween(200)) },
+        // Back follows Android's predictive-back look: the page you leave shrinks and fades
+        // (tracking the swipe on gesture navigation) while the previous one settles in beneath it.
+        popEnterTransition = { fadeIn(tween(250)) },
+        popExitTransition = { scaleOut(tween(250, easing = EmphasizedAccel), targetScale = 0.9f) + fadeOut(tween(250)) },
     ) {
         composable<Routers> {
             RoutersScreen(app.profiles, app.session, onOpen = { id -> nav.navigate(Home(id)) }, onAppearance = { nav.navigate(Appearance) })
