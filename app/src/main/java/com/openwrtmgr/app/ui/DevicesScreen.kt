@@ -93,25 +93,26 @@ fun DevicesScreen() {
                 "name" -> l.sortedBy { it.name.lowercase() }
                 "ip" -> l.sortedBy { it.ipv4?.split('.')?.joinToString("") { p -> p.padStart(3, '0') } ?: "z" }
                 "signal" -> l.sortedByDescending { it.station?.signal ?: -999 }
-                "data" -> l.sortedByDescending { (it.station?.rxBytes ?: 0) + (it.station?.txBytes ?: 0) }
+                "data" -> l.sortedByDescending { c.usage?.byMac?.get(it.mac)?.total ?: ((it.station?.rxBytes ?: 0) + (it.station?.txBytes ?: 0)) }
                 "network" -> l.sortedWith(compareBy({ it.network ?: "~" }, { it.name.lowercase() }))
                 else -> l
             }
         }
         if (list.isEmpty()) item { EmptyNote("No devices match.") }
-        items(list, key = { it.mac }) { d -> DeviceRow(d) { nav("device", d.mac) } }
+        items(list, key = { it.mac }) { d -> DeviceRow(d, c.usage?.byMac?.get(d.mac)?.total) { nav("device", d.mac) } }
     }
 }
 
 @Composable
-private fun DeviceRow(d: Device, onClick: () -> Unit) {
+private fun DeviceRow(d: Device, periodTotal: Long?, onClick: () -> Unit) {
     Panel(onClick = onClick, padding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
         ListRow(
             title = d.name,
             subtitle = listOfNotNull(
                 d.ipv4?.let { if (d.staticIp) "$it (static)" else it },
                 d.ssid ?: d.network,
-                d.station?.let { s -> bytes((s.rxBytes ?: 0) + (s.txBytes ?: 0)).takeIf { (s.rxBytes ?: 0) > 0 } },
+                periodTotal?.takeIf { it > 0 }?.let { "${bytes(it)} used" }
+                    ?: d.station?.let { s -> bytes((s.rxBytes ?: 0) + (s.txBytes ?: 0)).takeIf { (s.rxBytes ?: 0) > 0 } },
             ).joinToString(" · ").ifBlank { d.mac },
             icon = d.kind.icon(), avatarKey = d.mac, dim = !d.online,
         ) {
@@ -167,6 +168,7 @@ fun DeviceScreen(mac: String, onBack: () -> Unit) {
             }
         }
         if (d.online && d.ipv4 != null) item { LiveUsage(d) }
+        item { DataUsed(d, c.usage?.byMac?.get(d.mac), c.usage?.since, c.usage != null) }
         d.station?.let { s ->
             item {
                 Panel(title = "Wireless link") {
@@ -176,8 +178,6 @@ fun DeviceScreen(mac: String, onBack: () -> Unit) {
                         Metric("Tx rate", kbps(s.txRate).substringBefore(' '), kbps(s.txRate).substringAfter(' ', ""), Ops.violet, modifier = Modifier.weight(1f))
                     }
                     Spacer(Modifier.height(10.dp))
-                    KV("Downloaded", bytes(s.txBytes)) // router tx = device download
-                    KV("Uploaded", bytes(s.rxBytes))
                     s.connectedSec?.let { KV("Connected for", duration(it)) }
                     KV("Interface", s.ifname)
                 }
@@ -273,6 +273,40 @@ private fun LiveUsage(d: Device) {
         Spacer(Modifier.height(10.dp))
         TrafficChart(down, if (d.wireless) up else emptyList())
         Text(if (d.wireless) "From the Wi-Fi link counters." else "Wired: both directions combined, from this device's tracked connections.", color = Ops.faint, fontSize = 11.sp)
+    }
+}
+
+/**
+ * How much this device has used, by window: this accounting period (nlbwmon, survives reconnects
+ * and covers wired devices) and the current Wi-Fi session (the station's link counters).
+ */
+@Composable
+private fun DataUsed(d: Device, period: com.openwrtmgr.app.data.HostUsage?, since: String?, nlbw: Boolean) {
+    Panel(title = "Data used") {
+        if (period != null) {
+            Caps(since?.let { "This period · since ${periodStart(it)}" } ?: "This period")
+            Spacer(Modifier.height(4.dp))
+            Row {
+                Metric("↓ Downloaded", bytes(period.rx).substringBefore(' '), bytes(period.rx).substringAfter(' ', ""), Ops.accent, modifier = Modifier.weight(1f))
+                Metric("↑ Uploaded", bytes(period.tx).substringBefore(' '), bytes(period.tx).substringAfter(' ', ""), Ops.violet, modifier = Modifier.weight(1f))
+            }
+            KV("Total", bytes(period.total))
+            KV("Connections", period.conns.toString())
+        }
+        d.station?.let { s ->
+            if (period != null) { Spacer(Modifier.height(6.dp)); Divider(); Spacer(Modifier.height(10.dp)) }
+            Caps(s.connectedSec?.let { "This Wi-Fi session · ${duration(it)}" } ?: "This Wi-Fi session")
+            Spacer(Modifier.height(4.dp))
+            Row {
+                Metric("↓ Downloaded", bytes(s.txBytes).substringBefore(' '), bytes(s.txBytes).substringAfter(' ', ""), Ops.accent, modifier = Modifier.weight(1f)) // router tx = device download
+                Metric("↑ Uploaded", bytes(s.rxBytes).substringBefore(' '), bytes(s.rxBytes).substringAfter(' ', ""), Ops.violet, modifier = Modifier.weight(1f))
+            }
+        }
+        if (period == null && d.station == null) Text("No totals for this device yet.", color = Ops.muted, fontSize = 13.sp)
+        if (!nlbw) {
+            Spacer(Modifier.height(8.dp))
+            Text("Install luci-app-nlbwmon on the router to keep totals across reconnects and for wired devices.", color = Ops.faint, fontSize = 11.sp)
+        }
     }
 }
 

@@ -396,6 +396,11 @@ fun rate(bytesPerSec: Float): Pair<String, String> {
 
 fun rateText(bytesPerSec: Float) = rate(bytesPerSec).let { "${it.first} ${it.second}" }
 
+/** nlbwmon period start "2026-10-01" → "Oct 1, 2026" in the phone's locale. */
+fun periodStart(iso: String): String = runCatching {
+    java.time.LocalDate.parse(iso).format(java.time.format.DateTimeFormatter.ofLocalizedDate(java.time.format.FormatStyle.MEDIUM))
+}.getOrDefault(iso)
+
 fun duration(sec: Long): String {
     val d = sec / 86400; val h = sec % 86400 / 3600; val m = sec % 3600 / 60
     return when {

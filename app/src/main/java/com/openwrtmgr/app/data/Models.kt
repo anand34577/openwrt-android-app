@@ -66,7 +66,10 @@ data class Iface(
     val name: String, val proto: String, val up: Boolean, val device: String?, val uptime: Long,
     val ipv4: List<String>, val ipv6: List<String>, val gateway: String?, val dns: List<String>,
     val routes: List<Route>, val error: String?,
-)
+) {
+    /** Carries a default route (IPv4 or IPv6): one of the router's ways to the internet. */
+    val uplink get() = up && routes.any { it.mask == 0 && (it.target == "0.0.0.0" || it.target == "::") }
+}
 
 data class Route(val target: String, val mask: Int, val nexthop: String, val metric: Int?, val iface: String)
 
@@ -565,6 +568,40 @@ data class Conn(
 fun conntrackDelta(before: List<Conn>, after: List<Conn>): Long {
     val prev = before.associate { it.flow to it.bytes }
     return after.sumOf { (it.bytes - (prev[it.flow] ?: 0)).coerceAtLeast(0) }
+}
+
+/** [conntrackDelta] split by local address: each flow's growth goes to whichever of [ips] it belongs to. */
+fun conntrackDeltaByIp(before: List<Conn>, after: List<Conn>, ips: Set<String>): Map<String, Long> {
+    val prev = before.associate { it.flow to it.bytes }
+    val out = HashMap<String, Long>()
+    for (c in after) {
+        val ip = c.src.takeIf { it in ips } ?: c.dst.takeIf { it in ips } ?: continue
+        out[ip] = (out[ip] ?: 0) + (c.bytes - (prev[c.flow] ?: 0)).coerceAtLeast(0)
+    }
+    return out
+}
+
+/** One device's traffic as nlbwmon accounted it: [rx] is what it downloaded, [tx] what it uploaded. */
+data class HostUsage(val rx: Long, val tx: Long, val conns: Long) { val total get() = rx + tx }
+
+/** nlbwmon's tally for its current accounting period, which started on [since] ("2026-10-01"). */
+data class Usage(val since: String?, val byMac: Map<String, HostUsage>)
+
+/** `nlbw -c json -g mac`: {"columns":["mac","conns","rx_bytes",...],"data":[[...],...]}; rows summed per MAC. */
+fun parseNlbw(text: String): Map<String, HostUsage>? {
+    val o = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(text).obj() }.getOrNull() ?: return null
+    val cols = o["columns"].strList().takeIf { it.isNotEmpty() } ?: return null
+    val mac = cols.indexOf("mac"); val rx = cols.indexOf("rx_bytes"); val tx = cols.indexOf("tx_bytes"); val conns = cols.indexOf("conns")
+    if (mac < 0 || rx < 0 || tx < 0) return null
+    val out = HashMap<String, HostUsage>()
+    for (row in o["data"].arr()) {
+        val r = row.arr()
+        val m = r.getOrNull(mac).str()?.uppercase() ?: continue
+        val prev = out[m]
+        out[m] = HostUsage((prev?.rx ?: 0) + (r.getOrNull(rx).long() ?: 0), (prev?.tx ?: 0) + (r.getOrNull(tx).long() ?: 0),
+            (prev?.conns ?: 0) + (r.getOrNull(conns).long() ?: 0))
+    }
+    return out
 }
 
 /** `luci getConntrackList` → active NAT/connection-tracking entries. */
