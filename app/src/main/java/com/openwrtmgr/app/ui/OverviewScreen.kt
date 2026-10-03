@@ -65,17 +65,19 @@ class OverviewVM(private val r: Router) : ViewModel() {
     var mem by mutableStateOf(listOf<Float>()); private set
     var cpuAvailable by mutableStateOf(true)
     var ports by mutableStateOf<List<com.openwrtmgr.app.data.Port>>(emptyList())
-    /** Interface whose traffic the chart shows; null = the WAN. */
-    var chartIface by mutableStateOf<String?>(null)
+    /** Live (download, upload) bytes/s per interface name, from the devices' point of view. */
+    var ifaceRates by mutableStateOf<Map<String, Pair<Float, Float>>>(emptyMap())
         private set
 
-    fun selectChart(name: String?) { chartIface = name; rx = emptyList(); tx = emptyList(); lastBytes = null }
-
     private var lastBytes: Triple<Long, Long, Long>? = null // rx, tx, timeMs
+    private var lastDevs: Pair<Map<String, com.openwrtmgr.app.data.DevStats>, Long>? = null
     private var lastJiffies: Pair<Long, Long>? = null
     private var tick = 0
 
     val wan get() = ifaces.firstOrNull { it.gateway != null && it.up } ?: ifaces.firstOrNull { it.name == "wan" }
+
+    /** Every interface with a default route; the hero chart is their combined traffic. */
+    val uplinks get() = ifaces.filter { it.uplink }.ifEmpty { listOfNotNull(wan) }
 
     suspend fun poll() {
         while (true) {
@@ -106,17 +108,32 @@ class OverviewVM(private val r: Router) : ViewModel() {
     }
 
     private suspend fun sampleTraffic() {
-        val dev = (chartIface?.let { n -> ifaces.firstOrNull { it.name == n } } ?: wan)?.device ?: return
-        val s = r.deviceStats()[dev] ?: return
+        val stats = r.deviceStats()
         val now = System.currentTimeMillis()
-        lastBytes?.let { (rx0, tx0, t0) ->
-            val dt = (now - t0) / 1000f
-            if (dt > 0 && s.rx >= rx0 && s.tx >= tx0) {
-                rx = (rx + (s.rx - rx0) / dt).takeLast(HISTORY)
-                tx = (tx + (s.tx - tx0) / dt).takeLast(HISTORY)
+        // Combined internet traffic: each uplink's netdev counted once (wan and wan6 usually share eth1).
+        val devs = uplinks.mapNotNull { it.device }.distinct().mapNotNull { stats[it] }
+        if (devs.isNotEmpty()) {
+            val rxNow = devs.sumOf { it.rx }; val txNow = devs.sumOf { it.tx }
+            lastBytes?.let { (rx0, tx0, t0) ->
+                val dt = (now - t0) / 1000f
+                if (dt > 0 && rxNow >= rx0 && txNow >= tx0) {
+                    rx = (rx + (rxNow - rx0) / dt).takeLast(HISTORY)
+                    tx = (tx + (txNow - tx0) / dt).takeLast(HISTORY)
+                }
             }
+            lastBytes = Triple(rxNow, txNow, now)
         }
-        lastBytes = Triple(s.rx, s.tx, now)
+        lastDevs?.let { (prev, t0) ->
+            val dt = (now - t0) / 1000f
+            if (dt > 0) ifaceRates = ifaces.mapNotNull { i ->
+                val dev = i.device ?: return@mapNotNull null
+                val a = prev[dev] ?: return@mapNotNull null
+                val b = stats[dev] ?: return@mapNotNull null
+                if (b.rx < a.rx || b.tx < a.tx) return@mapNotNull null
+                i.name to directional(i, (b.rx - a.rx) / dt, (b.tx - a.tx) / dt)
+            }.toMap()
+        }
+        lastDevs = stats to now
     }
 
     companion object { const val HISTORY = 60 }
@@ -204,18 +221,29 @@ fun OverviewScreen(onSwitchRouter: () -> Unit) {
                 }
             }
             item {
-                Panel(title = "Interfaces", action = { Caps("Tap to graph") }) {
+                val nav = LocalNav()
+                Panel(title = "Interfaces", action = { Caps("Tap for details") }) {
                     vm.ifaces.filter { it.name != "loopback" }.forEach { i ->
-                        val charted = i.name == (vm.chartIface ?: vm.wan?.name)
+                        val rate = vm.ifaceRates[i.name]
                         Row(
-                            Modifier.fillMaxWidth().clickable { vm.selectChart(i.name.takeUnless { it == vm.wan?.name }) }.padding(vertical = 6.dp),
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { nav("iface", i.name) }.padding(vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Dot(if (i.up) Ops.ok else Ops.faint, pulse = charted)
+                            Dot(if (i.up) Ops.ok else Ops.faint, pulse = i.uplink)
                             Spacer(Modifier.width(6.dp))
-                            MonoText(i.name, Modifier.weight(0.3f), weight = FontWeight.Medium, color = if (charted) Ops.accent else Ops.text)
-                            MonoText(i.ipv4.firstOrNull() ?: i.proto, Modifier.weight(0.5f), color = Ops.muted, size = 12)
-                            Text(if (i.up) duration(i.uptime) else "down", color = Ops.faint, fontSize = 12.sp, fontFamily = Mono)
+                            Column(Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    MonoText(i.name, weight = FontWeight.Medium)
+                                    if (i.uplink) { Spacer(Modifier.width(6.dp)); Tag("internet", Ops.accent) }
+                                }
+                                MonoText(listOfNotNull(i.ipv4.firstOrNull() ?: i.proto, i.device).joinToString(" · "), color = Ops.muted, size = 12)
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                if (i.up && rate != null) {
+                                    MonoText("↓ ${rateText(rate.first)}", color = Ops.accent, size = 12)
+                                    MonoText("↑ ${rateText(rate.second)}", color = Ops.violet, size = 12)
+                                } else MonoText(if (i.up) duration(i.uptime) else "down", color = Ops.faint, size = 12)
+                            }
                         }
                     }
                 }
@@ -251,7 +279,7 @@ private fun InternetPanel(vm: OverviewVM) {
                         Text(if (up) "Online" else "No internet", color = white, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                     }
                     Spacer(Modifier.weight(1f))
-                    Text(vm.chartIface?.let { "Graph: $it" } ?: wan?.let { "${it.name} · ${it.proto}" } ?: "no wan", color = white.copy(alpha = 0.8f), fontSize = 13.sp)
+                    Text(vm.uplinks.joinToString(" + ") { it.name }.ifBlank { "no uplink" }, color = white.copy(alpha = 0.8f), fontSize = 13.sp, maxLines = 1)
                 }
                 Spacer(Modifier.height(22.dp))
                 Row {
@@ -262,6 +290,12 @@ private fun InternetPanel(vm: OverviewVM) {
                 }
                 Spacer(Modifier.height(14.dp))
                 TrafficChart(vm.rx, vm.tx, capacity = OverviewVM.HISTORY, rxColor = white, txColor = white.copy(alpha = 0.5f), gridColor = white.copy(alpha = 0.18f))
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    if (vm.uplinks.size > 1) "All internet traffic, combined across ${vm.uplinks.size} uplinks"
+                    else "All internet traffic through ${vm.uplinks.firstOrNull()?.device ?: "the WAN"}",
+                    color = white.copy(alpha = 0.7f), fontSize = 12.sp,
+                )
             }
         }
     }
@@ -319,3 +353,9 @@ private fun StorageRow(label: String, used: Long, total: Long) {
 /** Shorthand so composables can grab the navigator without the import dance. */
 @Composable
 fun LocalNav(): (String, String) -> Unit = com.openwrtmgr.app.LocalNav.current
+
+/**
+ * Interface counters are the router's view (rx = received). On an uplink that is the internet
+ * download; on a LAN-side interface the router *sends* what its devices download.
+ */
+fun directional(i: Iface, rx: Float, tx: Float): Pair<Float, Float> = if (i.uplink) rx to tx else tx to rx

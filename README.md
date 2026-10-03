@@ -21,9 +21,9 @@ It talks to the router the same way LuCI does, over the ubus JSON-RPC interface 
 
 ## What you can do
 
-**Overview.** Live download and upload, CPU and memory, WAN details, Ethernet port status, interfaces, and Wi-Fi at a glance.
+**Overview.** Live download and upload across all your internet connections combined, CPU and memory, WAN details, Ethernet port status, and Wi-Fi at a glance. Each interface shows its live speed; open one for its own graph, totals and details, and a list of the devices behind it ranked by what they're using right now.
 
-**Devices.** See everyone on the network with their signal, address and data use. Open a device to block its internet, pause it on a schedule, give it a fixed IP and name, forward a port to it, watch its live traffic, or wake it up.
+**Devices.** See everyone on the network with their signal, address and data use. Open a device to block its internet, pause it on a schedule, give it a fixed IP and name, forward a port to it, watch its live traffic, see how much data it has used, or wake it up.
 
 **Wi-Fi.** Turn radios on and off, change channels and power, edit or add networks, create a guest network, share a network by QR code, schedule Wi-Fi hours, and scan for nearby networks.
 
@@ -39,7 +39,7 @@ The app has several colour themes, including light, dark and AMOLED, and can fol
 
 - OpenWrt with LuCI (or at least `uhttpd` with `uhttpd-mod-ubus` and `rpcd`).
 - A login that is allowed to use ubus. The default `root` account works.
-- Some features need extra packages on the router and show a clear message if they are missing, for example `etherwake` for Wake on LAN.
+- Some features need extra packages on the router and show a clear message if they are missing: `luci-app-wol` for Wake on LAN, and `luci-app-nlbwmon` for per-device data totals that last across reconnects and include wired devices.
 - HTTPS is supported. The certificate is pinned the first time you connect, and the app refuses to connect if it later changes.
 
 Your password is stored on the phone only, encrypted with the Android Keystore, and only if you choose to remember it. The app never sends anything anywhere except to the router you add.

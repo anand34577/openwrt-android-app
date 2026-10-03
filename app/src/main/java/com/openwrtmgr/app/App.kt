@@ -163,6 +163,7 @@ private fun AppNav(app: OpenWrtApp) {
                 CompositionLocalProvider(LocalNav provides { page, arg -> nav.navigate(Page(p.id, page, arg)) }) {
                     when (p.page) {
                         "device" -> DeviceScreen(p.arg, back)
+                        "iface" -> InterfaceScreen(p.arg, back)
                         "scan" -> ScanScreen(p.arg, back)
                         "firewall" -> FirewallScreen(back)
                         "dhcp" -> DhcpDnsScreen(back)

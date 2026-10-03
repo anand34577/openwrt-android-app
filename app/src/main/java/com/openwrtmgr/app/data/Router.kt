@@ -119,7 +119,7 @@ class Router(val profile: RouterProfile, val ubus: Ubus, private val onPasswordC
 
     // ---------- devices ----------
 
-    data class Clients(val devices: List<Device>, val stationsByIf: Map<String, List<Station>>)
+    data class Clients(val devices: List<Device>, val stationsByIf: Map<String, List<Station>>, val usage: Usage? = null)
 
     suspend fun clients(): Clients = coroutineScope {
         val hints = async { ubus.callOrNull("luci-rpc", "getHostHints")?.let(::parseHostHints).orEmpty() }
@@ -127,6 +127,7 @@ class Router(val profile: RouterProfile, val ubus: Ubus, private val onPasswordC
         val dhcp = async { parseDhcp(uci("dhcp")) }
         val fw = async { parseFirewall(uci("firewall")) }
         val neigh = async { neighbors() }
+        val usage = async { usage() }
         val ifs = async { runCatching { interfaces() }.getOrDefault(emptyList()) }
         val w = wireless()
         val aps = w.ssids.filter { it.ifname != null && it.mode == "ap" }
@@ -145,7 +146,7 @@ class Router(val profile: RouterProfile, val ubus: Ubus, private val onPasswordC
             netByDev = ifs.await().mapNotNull { i -> i.device?.let { it to i.name } }.toMap(),
             netBySsidIf = aps.associate { it.ifname!! to (it.network.firstOrNull() ?: "") },
         ).map { it.copy(blockRule = blockRules[it.mac]) }
-        Clients(devices, stations.groupBy { it.ifname })
+        Clients(devices, stations.groupBy { it.ifname }, usage.await())
     }
 
     /** Kernel neighbor table (IPv4) — the same `ip neigh` LuCI's Routes page runs. Empty if not permitted. */
@@ -160,6 +161,29 @@ class Router(val profile: RouterProfile, val ubus: Ubus, private val onPasswordC
         val st = ubus.callOrNull("iwinfo", "assoclist", args("device" to s.ifname, "mac" to d.mac))?.let { parseAssoclist(s.ifname, it) }
             ?.firstOrNull { it.mac == d.mac } ?: return null
         return (st.txBytes ?: 0) to (st.rxBytes ?: 0) // router tx = device download
+    }
+
+    /** Every Wi-Fi client on one AP interface with its link byte counters. */
+    suspend fun stations(ifname: String): List<Station> =
+        ubus.callOrNull("iwinfo", "assoclist", args("device" to ifname))?.let { parseAssoclist(ifname, it) }.orEmpty()
+
+    @Volatile private var nlbwUnavailable = false
+
+    /**
+     * Per-device totals from nlbwmon (luci-app-nlbwmon), which keeps counting across reconnects
+     * and for wired devices too. Null when it isn't installed or allowed; not asked again after that.
+     */
+    suspend fun usage(): Usage? {
+        if (nlbwUnavailable) return null
+        return try {
+            val byMac = parseNlbw(ubus.cgiExec(NLBW, "download", "-g", "mac", stderr = false)) ?: throw RouterException("nlbwmon")
+            val since = runCatching {
+                kotlinx.serialization.json.Json.parseToJsonElement(ubus.cgiExec(NLBW, "periods", stderr = false)).obj()["periods"].strList().maxOrNull()
+            }.getOrNull()
+            Usage(since, byMac)
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Throwable) {
+            nlbwUnavailable = true; null
+        }
     }
 
     /** The tracked connections of one IP, for a wired device's traffic. */
@@ -466,5 +490,6 @@ class Router(val profile: RouterProfile, val ubus: Ubus, private val onPasswordC
         const val BLOCK_PREFIX = "Block: "
         private const val WIFI_TAG = "# openwrtmgr-wifi"
         private const val PKG = "/usr/libexec/package-manager-call"
+        private const val NLBW = "/usr/libexec/nlbwmon-action"
     }
 }

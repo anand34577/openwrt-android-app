@@ -95,6 +95,29 @@ class ParsersTest {
         assertTrue(feed.none { it.installed })
     }
 
+    @Test fun nlbwmonTotalsPerMac() {
+        // nlbw -c json -g mac: one row per MAC per address family, summed.
+        val u = parseNlbw("""{"columns":["family","mac","conns","rx_bytes","rx_pkts","tx_bytes","tx_pkts"],"data":[[4,"aa:bb:cc:dd:ee:01",10,1000,1,200,1],[6,"aa:bb:cc:dd:ee:01",2,500,1,50,1],[4,"aa:bb:cc:dd:ee:02",1,7,1,3,1]]}""")!!
+        assertEquals(HostUsage(1500, 250, 12), u["AA:BB:CC:DD:EE:01"])
+        assertEquals(10L, u["AA:BB:CC:DD:EE:02"]!!.total)
+        assertNull(parseNlbw("nlbw: connection refused"))
+    }
+
+    @Test fun uplinksAreInterfacesWithDefaultRoutes() {
+        val ifs = parseInterfaces(j("""{"interface":[
+            {"interface":"wan","up":true,"l3_device":"eth1","route":[{"target":"0.0.0.0","mask":0,"nexthop":"203.0.113.1"}]},
+            {"interface":"wan6","up":true,"l3_device":"eth1","route":[{"target":"::","mask":0,"nexthop":"fe80::1"}]},
+            {"interface":"lan","up":true,"l3_device":"br-lan","route":[]}]}"""))
+        assertEquals(listOf("wan", "wan6"), ifs.filter { it.uplink }.map { it.name })
+    }
+
+    @Test fun conntrackDeltaSplitsByLocalIp() {
+        fun c(src: String, dst: String, sport: String, bytes: Long) = Conn("tcp", src, sport, dst, "443", bytes, 1)
+        val before = listOf(c("192.168.1.10", "1.1.1.1", "1", 100), c("192.168.1.20", "8.8.8.8", "2", 100))
+        val after = listOf(c("192.168.1.10", "1.1.1.1", "1", 400), c("192.168.1.20", "8.8.8.8", "2", 150), c("9.9.9.9", "192.168.1.20", "3", 25))
+        assertEquals(mapOf("192.168.1.10" to 300L, "192.168.1.20" to 75L), conntrackDeltaByIp(before, after, setOf("192.168.1.10", "192.168.1.20")))
+    }
+
     @Test fun hostapdRatesAreAlreadyKbps() {
         val s = parseHostapdClients("phy1-ap0", j("""{"clients":{"aa:bb:cc:dd:ee:ff":{"rate":{"rx":866700,"tx":650000},"bytes":{"rx":1,"tx":2},"signal":-50}}}""")).single()
         assertEquals(866700L, s.rxRate); assertEquals(650000L, s.txRate)
