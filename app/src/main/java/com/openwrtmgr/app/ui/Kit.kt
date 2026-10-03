@@ -1,6 +1,33 @@
 package com.openwrtmgr.app.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.offset
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.composed
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
@@ -49,6 +76,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -204,6 +232,44 @@ fun OpsTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = remember(p) { schemeFor(p) }, typography = type, content = content)
 }
 
+// ---------------------------------------------------------------- motion
+
+/** Material 3 emphasized curves: quick start, long gentle settle. */
+val EmphasizedDecel = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1f)
+val EmphasizedAccel = CubicBezierEasing(0.3f, 0f, 0.8f, 0.15f)
+
+/** Clickable that sinks slightly under the finger and springs back on release. */
+fun Modifier.pressClick(onClick: () -> Unit, shape: androidx.compose.ui.graphics.Shape = RoundedCornerShape(12.dp), scaleTo: Float = 0.97f): Modifier = composed {
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (pressed) scaleTo else 1f, spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMedium), label = "press")
+    graphicsLayer { scaleX = scale; scaleY = scale }
+        .clip(shape)
+        .clickable(interactionSource = source, indication = androidx.compose.material3.ripple(), onClick = onClick)
+}
+
+/**
+ * Fades and lifts a card in the first time it appears. Cards lower on screen start a little
+ * later, so a fresh screen fills in top to bottom. rememberSaveable keeps lazy-list items
+ * from replaying it when scrolled back into view or when returning from a pushed screen.
+ */
+fun Modifier.enterOnce(): Modifier = composed {
+    var seen by rememberSaveable { mutableStateOf(false) }
+    if (seen) return@composed this
+    val progress = remember { Animatable(0f) }
+    var y by remember { mutableStateOf<Float?>(null) }
+    val screenPx = with(LocalDensity.current) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
+    val lift = with(LocalDensity.current) { 18.dp.toPx() }
+    LaunchedEffect(y != null) {
+        val top = y ?: return@LaunchedEffect
+        kotlinx.coroutines.delay((top / screenPx).coerceIn(0f, 1f).times(220).toLong())
+        progress.animateTo(1f, tween(520, easing = EmphasizedDecel))
+        seen = true
+    }
+    onGloballyPositioned { if (y == null) y = it.positionInWindow().y }
+        .graphicsLayer { alpha = progress.value; translationY = (1 - progress.value) * lift }
+}
+
 // ---------------------------------------------------------------- building blocks
 
 private val PanelShape = RoundedCornerShape(22.dp)
@@ -220,12 +286,14 @@ fun Panel(
 ) {
     Column(
         modifier
+            .enterOnce()
+            .then(if (onClick != null) Modifier.pressClick(onClick, PanelShape, 0.98f) else Modifier)
             .fillMaxWidth()
             .clip(PanelShape)
             .background(Ops.panel)
             .border(1.dp, Ops.line.copy(alpha = 0.6f), PanelShape)
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(padding),
+            .padding(padding)
+            .animateContentSize(spring(stiffness = Spring.StiffnessMediumLow)),
     ) {
         if (title != null || action != null) {
             Row(Modifier.fillMaxWidth().padding(bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -254,7 +322,15 @@ fun Metric(label: String, value: String, unit: String = "", color: Color = Ops.t
         Caps(label, color = labelColor)
         Spacer(Modifier.height(2.dp))
         Row(verticalAlignment = Alignment.Bottom) {
-            Text(value, fontSize = 28.sp, fontWeight = FontWeight.SemiBold, color = color, letterSpacing = (-0.8).sp)
+            // Live readouts roll up or down to their new value instead of flicking.
+            AnimatedContent(
+                value, label = "metric",
+                transitionSpec = {
+                    val up = (targetState.toDoubleOrNull() ?: 0.0) >= (initialState.toDoubleOrNull() ?: 0.0)
+                    (slideInVertically(tween(320, easing = EmphasizedDecel)) { if (up) it / 2 else -it / 2 } + fadeIn(tween(220)))
+                        .togetherWith(slideOutVertically(tween(220, easing = EmphasizedAccel)) { if (up) -it / 2 else it / 2 } + fadeOut(tween(160)))
+                },
+            ) { v -> Text(v, fontSize = 28.sp, fontWeight = FontWeight.SemiBold, color = color, letterSpacing = (-0.8).sp) }
             if (unit.isNotEmpty()) Text(" $unit", fontSize = 13.sp, color = unitColor, modifier = Modifier.padding(bottom = 4.dp))
         }
         if (sub != null) Text(sub, fontSize = 12.sp, color = Ops.faint, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -266,7 +342,7 @@ fun Metric(label: String, value: String, unit: String = "", color: Color = Ops.t
 fun Dot(color: Color, pulse: Boolean = false, size: Dp = 8.dp) {
     val halo = if (pulse) {
         val t = rememberInfiniteTransition(label = "dot")
-        t.animateFloat(0f, 1f, infiniteRepeatable(tween(1600), RepeatMode.Restart), label = "halo").value
+        t.animateFloat(0f, 1f, infiniteRepeatable(tween(1800, easing = FastOutSlowInEasing), RepeatMode.Restart), label = "halo").value
     } else 0f
     Box(Modifier.size(size * 2), contentAlignment = Alignment.Center) {
         if (pulse) Box(Modifier.size(size * (1 + halo)).clip(CircleShape).background(color.copy(alpha = 0.35f * (1 - halo))))
@@ -288,9 +364,10 @@ fun Tag(text: String, color: Color = Ops.muted, modifier: Modifier = Modifier) {
 /** Thin usage bar with animated fill; turns amber/red as it fills. */
 @Composable
 fun UsageBar(pct: Float, modifier: Modifier = Modifier, color: Color = usageColor(pct)) {
-    val anim by animateFloatAsState(pct.coerceIn(0f, 100f) / 100f, tween(600), label = "bar")
+    val anim by animateFloatAsState(pct.coerceIn(0f, 100f) / 100f, tween(900, easing = EmphasizedDecel), label = "bar")
+    val tint by animateColorAsState(color, tween(400), label = "barColor")
     Box(modifier.fillMaxWidth().height(8.dp).clip(CircleShape).background(Ops.raised)) {
-        Box(Modifier.fillMaxWidth(anim).height(8.dp).clip(CircleShape).background(color))
+        Box(Modifier.fillMaxWidth(anim).height(8.dp).clip(CircleShape).background(tint))
     }
 }
 
@@ -342,7 +419,7 @@ fun Avatar(icon: ImageVector, key: String, size: Dp = 44.dp, dim: Boolean = fals
 /** Settings-style card: rows separated by inset hairlines. */
 @Composable
 fun GroupCard(rows: List<@Composable () -> Unit>) {
-    Column(Modifier.fillMaxWidth().clip(PanelShape).background(Ops.panel).border(1.dp, Ops.line.copy(alpha = 0.6f), PanelShape)) {
+    Column(Modifier.enterOnce().fillMaxWidth().clip(PanelShape).background(Ops.panel).border(1.dp, Ops.line.copy(alpha = 0.6f), PanelShape)) {
         rows.forEachIndexed { i, row ->
             Box(Modifier.padding(horizontal = 12.dp)) { row() }
             if (i < rows.lastIndex) Box(Modifier.padding(start = 70.dp).fillMaxWidth().height(1.dp).background(Ops.line.copy(alpha = 0.6f)))
@@ -365,7 +442,7 @@ fun ListRow(
 ) {
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .then(if (onClick != null) Modifier.pressClick(onClick) else Modifier)
             .padding(vertical = 10.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -440,17 +517,22 @@ fun Field(
 /** Segmented single-choice chips, for small enums (proto, target, band...). */
 @Composable
 fun <T> Segmented(options: List<Pair<T, String>>, selected: T, onSelect: (T) -> Unit, modifier: Modifier = Modifier) {
-    Row(
-        modifier.fillMaxWidth().clip(CircleShape).background(Ops.raised).padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
-    ) {
-        options.forEach { (v, label) ->
-            val on = v == selected
-            Box(
-                Modifier.weight(1f).clip(CircleShape).background(if (on) Ops.accent.copy(alpha = 0.2f) else Color.Transparent)
-                    .clickable { onSelect(v) }.padding(vertical = 9.dp),
-                contentAlignment = Alignment.Center,
-            ) { Text(label, color = if (on) Ops.accent else Ops.muted, fontSize = 12.5.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1) }
+    // A single pill glides between options rather than each option fading its own background.
+    BoxWithConstraints(modifier.fillMaxWidth().clip(CircleShape).background(Ops.raised).padding(4.dp)) {
+        val gap = 3.dp
+        val w = (maxWidth - gap * (options.size - 1)) / options.size.coerceAtLeast(1)
+        val index = options.indexOfFirst { it.first == selected }
+        val x by animateDpAsState((w + gap) * index.coerceAtLeast(0), spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow), label = "pill")
+        if (index >= 0) Box(Modifier.offset(x = x).width(w).height(36.dp).clip(CircleShape).background(Ops.accent.copy(alpha = 0.2f)))
+        Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
+            options.forEach { (v, label) ->
+                val on = v == selected
+                val tint by animateColorAsState(if (on) Ops.accent else Ops.muted, tween(250), label = "segText")
+                Box(
+                    Modifier.weight(1f).height(36.dp).clip(CircleShape).clickable { onSelect(v) },
+                    contentAlignment = Alignment.Center,
+                ) { Text(label, color = tint, fontSize = 12.5.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1) }
+            }
         }
     }
 }
@@ -461,12 +543,13 @@ fun <T> ChipPicker(options: List<Pair<T, String>>, isSelected: (T) -> Boolean, o
     androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         options.forEach { (v, label) ->
             val on = isSelected(v)
+            val bg by animateColorAsState(if (on) Ops.accent.copy(alpha = 0.2f) else Ops.raised, tween(220), label = "chipBg")
+            val fg by animateColorAsState(if (on) Ops.accent else Ops.muted, tween(220), label = "chipFg")
             Text(
                 label,
-                Modifier.clip(CircleShape)
-                    .background(if (on) Ops.accent.copy(alpha = 0.2f) else Ops.raised)
-                    .clickable { onToggle(v) }.padding(horizontal = 14.dp, vertical = 8.dp),
-                color = if (on) Ops.accent else Ops.muted, fontSize = 13.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
+                Modifier.pressClick({ onToggle(v) }, CircleShape, 0.94f)
+                    .background(bg).padding(horizontal = 14.dp, vertical = 8.dp),
+                color = fg, fontSize = 13.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
             )
         }
     }
@@ -500,9 +583,19 @@ fun PrimaryButton(text: String, modifier: Modifier = Modifier, enabled: Boolean 
 @Composable
 fun TrafficChart(rx: List<Float>, tx: List<Float>, modifier: Modifier = Modifier, capacity: Int = 60,
                  rxColor: Color = Ops.accent, txColor: Color = Ops.violet, gridColor: Color = Ops.line) {
-    Canvas(modifier.fillMaxWidth().height(120.dp)) {
-        val max = (rx + tx).maxOrNull()?.takeIf { it > 0f } ?: 1f
+    // Each new sample enters from the right edge and the graph glides left over the poll
+    // interval, so the chart scrolls continuously instead of jumping every two seconds.
+    val shift = remember { Animatable(0f) }
+    LaunchedEffect(rx) {
+        if (rx.size < 2) return@LaunchedEffect
+        shift.snapTo(1f)
+        shift.animateTo(0f, tween(1900, easing = LinearEasing))
+    }
+    val peak by animateFloatAsState((rx + tx).maxOrNull()?.takeIf { it > 0f } ?: 1f, tween(800, easing = FastOutSlowInEasing), label = "peak")
+    Canvas(modifier.fillMaxWidth().height(120.dp).clipToBounds()) {
+        val max = peak
         val step = size.width / (capacity - 1).coerceAtLeast(1)
+        val slide = shift.value * step
         val dash = PathEffect.dashPathEffect(floatArrayOf(4f, 6f))
         for (i in 1..3) {
             val y = size.height * i / 4f
@@ -510,14 +603,14 @@ fun TrafficChart(rx: List<Float>, tx: List<Float>, modifier: Modifier = Modifier
         }
         fun series(values: List<Float>, color: Color) {
             if (values.size < 2) return
-            val x0 = size.width - (values.size - 1) * step
+            val x0 = size.width - (values.size - 1) * step + slide
             val line = Path()
             values.forEachIndexed { i, v ->
                 val x = x0 + i * step
                 val y = size.height - (v / max) * size.height * 0.92f
                 if (i == 0) line.moveTo(x, y) else line.lineTo(x, y)
             }
-            val fill = Path().apply { addPath(line); lineTo(size.width, size.height); lineTo(x0, size.height); close() }
+            val fill = Path().apply { addPath(line); lineTo(size.width + slide, size.height); lineTo(x0, size.height); close() }
             drawPath(fill, Brush.verticalGradient(listOf(color.copy(alpha = 0.28f), color.copy(alpha = 0f))))
             drawPath(line, color, style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
         }

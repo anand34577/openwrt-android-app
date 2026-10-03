@@ -4,6 +4,21 @@ A native Android app for looking after your OpenWrt router from your phone.
 
 It talks to the router the same way LuCI does, over the ubus JSON-RPC interface served by `uhttpd`. There is nothing to install on the router, no SSH, and no web view: you sign in with your normal router login and get a proper mobile interface.
 
+<p align="center">
+  <img src="docs/screenshots/overview.png" width="240" alt="Overview with live WAN traffic">
+  <img src="docs/screenshots/devices.png" width="240" alt="Devices on the network">
+  <img src="docs/screenshots/device.png" width="240" alt="One device's live usage and Wi-Fi link">
+</p>
+<p align="center">
+  <img src="docs/screenshots/wifi.png" width="240" alt="Wi-Fi radios and networks">
+  <img src="docs/screenshots/network.png" width="240" alt="Interfaces, firewall and DHCP">
+  <img src="docs/screenshots/system.png" width="240" alt="System tools">
+</p>
+<p align="center">
+  <img src="docs/screenshots/overview-light.png" width="240" alt="Overview in the Daylight theme">
+  <img src="docs/screenshots/routers.png" width="240" alt="Saved routers">
+</p>
+
 ## What you can do
 
 **Overview.** Live download and upload, CPU and memory, WAN details, Ethernet port status, interfaces, and Wi-Fi at a glance.
@@ -18,7 +33,7 @@ It talks to the router the same way LuCI does, over the ubus JSON-RPC interface 
 
 Changes to network settings are applied with an automatic rollback, so a mistake that cuts the app off from the router reverts itself.
 
-The app has several colour themes, including light, dark and AMOLED, and can follow your phone's setting.
+The app has several colour themes, including light, dark and AMOLED, and can follow your phone's setting. Screens slide into place, live numbers roll to their new values, and the traffic graph scrolls smoothly as new readings come in.
 
 ## Your router
 

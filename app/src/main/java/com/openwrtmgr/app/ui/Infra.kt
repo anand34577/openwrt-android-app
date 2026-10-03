@@ -3,6 +3,16 @@ package com.openwrtmgr.app.ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -55,6 +65,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -154,14 +165,17 @@ fun UiHostLayer(ui: UiHost, content: @Composable () -> Unit) {
                         .padding(horizontal = 18.dp, vertical = 14.dp),
                 ) { Text(d.visuals.message, color = Ops.bg, fontSize = 14.sp) }
             }
-            AnimatedVisibility(ui.busy != null, enter = fadeIn(), exit = fadeOut()) {
+            AnimatedVisibility(ui.busy != null, enter = fadeIn(tween(200)), exit = fadeOut(tween(250, delayMillis = 60))) {
                 Box(
                     Modifier.fillMaxSize().background(Color(0xB3000000))
                         .clickable(remember { MutableInteractionSource() }, null) {},
                     contentAlignment = Alignment.Center,
                 ) {
                     Row(
-                        Modifier.clip(RoundedCornerShape(20.dp)).background(Ops.raised)
+                        Modifier.animateEnterExit(
+                            enter = scaleIn(tween(320, easing = EmphasizedDecel), initialScale = 0.88f) + fadeIn(tween(200)),
+                            exit = scaleOut(tween(200, easing = EmphasizedAccel), targetScale = 0.94f) + fadeOut(tween(160)),
+                        ).clip(RoundedCornerShape(20.dp)).background(Ops.raised)
                             .padding(horizontal = 20.dp, vertical = 16.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -248,11 +262,23 @@ fun <T> DetailScreen(
     }
 }
 
+/** Skeleton cards with a soft light sweeping across them while the first load is in flight. */
 @Composable
 fun LoadingBlock() {
+    val sweep by rememberInfiniteTransition(label = "shimmer")
+        .animateFloat(-1f, 2f, infiniteRepeatable(tween(1400, easing = LinearEasing), RepeatMode.Restart), label = "sweep")
+    val shine = Ops.raised
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         repeat(3) {
-            Box(Modifier.fillMaxWidth().height(if (it == 0) 140.dp else 84.dp).clip(RoundedCornerShape(24.dp)).background(Ops.panel))
+            Box(
+                Modifier.fillMaxWidth().height(if (it == 0) 140.dp else 84.dp).clip(RoundedCornerShape(24.dp)).background(Ops.panel)
+                    .drawWithCache {
+                        val band = size.width * 0.6f
+                        val x = sweep * size.width
+                        val brush = Brush.linearGradient(listOf(Color.Transparent, shine, Color.Transparent), Offset(x - band, 0f), Offset(x, size.height))
+                        onDrawBehind { drawRect(brush) }
+                    },
+            )
         }
     }
 }
