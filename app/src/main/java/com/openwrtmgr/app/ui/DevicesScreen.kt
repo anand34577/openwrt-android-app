@@ -41,6 +41,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openwrtmgr.app.data.Device
+import com.openwrtmgr.app.data.conntrackDelta
 import com.openwrtmgr.app.data.DeviceKind
 import com.openwrtmgr.app.data.Presence
 import com.openwrtmgr.app.data.Router
@@ -235,18 +236,28 @@ private fun LiveUsage(d: Device) {
     var up by remember { mutableStateOf(listOf<Float>()) }
     LaunchedEffect(d.mac) {
         var last: Triple<Long, Long, Long>? = null
+        var lastConns: Pair<List<com.openwrtmgr.app.data.Conn>, Long>? = null
         while (true) {
-            val sample = runCatching { r.deviceBytes(d) }.getOrNull()
             val now = System.currentTimeMillis()
-            if (sample != null) {
-                last?.let { (rx0, tx0, t0) ->
-                    val dt = (now - t0) / 1000f
-                    if (dt > 0) {
-                        down = (down + ((sample.first - rx0).coerceAtLeast(0) / dt)).takeLast(60)
-                        up = (up + ((sample.second - tx0).coerceAtLeast(0) / dt)).takeLast(60)
+            if (d.wireless) {
+                runCatching { r.stationBytes(d) }.getOrNull()?.let { (rx, tx) ->
+                    last?.let { (rx0, tx0, t0) ->
+                        val dt = (now - t0) / 1000f
+                        if (dt > 0) {
+                            down = (down + ((rx - rx0).coerceAtLeast(0) / dt)).takeLast(60)
+                            up = (up + ((tx - tx0).coerceAtLeast(0) / dt)).takeLast(60)
+                        }
                     }
+                    last = Triple(rx, tx, now)
                 }
-                last = Triple(sample.first, sample.second, now)
+            } else d.ipv4?.let { ip ->
+                runCatching { r.connectionsOf(ip) }.getOrNull()?.let { conns ->
+                    lastConns?.let { (prev, t0) ->
+                        val dt = (now - t0) / 1000f
+                        if (dt > 0) down = (down + conntrackDelta(prev, conns) / dt).takeLast(60)
+                    }
+                    lastConns = conns to now
+                }
             }
             delay(2000)
         }

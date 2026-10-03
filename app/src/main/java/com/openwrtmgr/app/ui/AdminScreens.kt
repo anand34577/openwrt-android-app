@@ -309,7 +309,7 @@ fun LogsScreen(onBack: () -> Unit) {
         IconButton(onClick = { follow = !follow }) { Icon(Icons.Rounded.Sync, "Follow", tint = if (follow) Ops.accent else Ops.muted) }
         ShareButton(if (kernel) "Kernel log" else "System log") {
             (data.state.value as? Load.Ok)?.data.orEmpty().reversed().joinToString("\n") { l ->
-                (if (l.time > 0) fmt.format(Date(l.time * 1000)) + " " else "") + "${l.source}: ${l.message}"
+                (if (l.time > 0) fmt.format(Date(l.time)) + " " else "") + "${l.source}: ${l.message}"
             }
         }
     }) { lines ->
@@ -324,7 +324,7 @@ fun LogsScreen(onBack: () -> Unit) {
             val c = when { l.priority <= 3 -> Ops.bad; l.priority == 4 -> Ops.warn; else -> Ops.muted }
             Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
                 Row {
-                    if (l.time > 0) MonoText(fmt.format(Date(l.time * 1000)), color = Ops.faint, size = 10)
+                    if (l.time > 0) MonoText(fmt.format(Date(l.time)), color = Ops.faint, size = 10)
                     Spacer(Modifier.width(6.dp))
                     MonoText(l.source, color = c, size = 10)
                 }
