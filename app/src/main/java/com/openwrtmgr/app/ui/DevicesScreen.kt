@@ -93,7 +93,7 @@ fun DevicesScreen() {
                 "name" -> l.sortedBy { it.name.lowercase() }
                 "ip" -> l.sortedBy { it.ipv4?.split('.')?.joinToString("") { p -> p.padStart(3, '0') } ?: "z" }
                 "signal" -> l.sortedByDescending { it.station?.signal ?: -999 }
-                "data" -> l.sortedByDescending { c.usage?.byMac?.get(it.mac)?.total ?: ((it.station?.rxBytes ?: 0) + (it.station?.txBytes ?: 0)) }
+                "data" -> l.sortedByDescending { c.usage?.byMac?.get(it.mac)?.total ?: ((it.station?.rxBytes ?: 0L) + (it.station?.txBytes ?: 0L)) }
                 "network" -> l.sortedWith(compareBy({ it.network ?: "~" }, { it.name.lowercase() }))
                 else -> l
             }

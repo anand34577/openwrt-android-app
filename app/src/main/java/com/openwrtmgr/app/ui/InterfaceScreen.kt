@@ -37,6 +37,10 @@ import com.openwrtmgr.app.data.conntrackDeltaByIp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
+/** Busiest right now first; devices not measured yet go last, ties broken by period total. */
+fun busiestFirst(devices: List<Device>, rates: Map<String, LiveRate>, usage: com.openwrtmgr.app.data.Usage?): List<Device> =
+    devices.sortedWith(compareByDescending<Device> { rates[it.mac]?.total ?: -1f }.thenByDescending { usage?.byMac?.get(it.mac)?.total ?: 0L })
+
 /** What one device is moving right now, in bytes/s. Wired devices only have a combined figure. */
 data class LiveRate(val down: Float, val up: Float?) { val total get() = down + (up ?: 0f) }
 
@@ -74,9 +78,7 @@ class IfaceVM(private val r: Router, val name: String) : ViewModel() {
                 if (tick % 10 == 0) { iface = r.interfaces().firstOrNull { it.name == name }; clients = r.clients() }
                 sampleInterface()
                 sampleDevices()
-                if (tick % 5 == 1 || order.isEmpty()) order = members.sortedWith(
-                    compareByDescending<Device> { rates[it.mac]?.total ?: -1f }.thenByDescending { clients?.usage?.byMac?.get(it.mac)?.total ?: 0 },
-                ).map { it.mac }
+                if (tick % 5 == 1 || order.isEmpty()) order = busiestFirst(members, rates, clients?.usage).map { it.mac }
                 error = null
             } catch (e: CancellationException) { throw e } catch (e: Throwable) { error = e.friendly() }
             tick++
