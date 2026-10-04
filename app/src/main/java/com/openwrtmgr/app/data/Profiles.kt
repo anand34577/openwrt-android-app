@@ -119,3 +119,10 @@ fun gatewayAddress(context: Context): String? {
     val lp = cm.getLinkProperties(cm.activeNetwork) ?: return null
     return lp.routes.firstOrNull { it.isDefaultRoute && it.gateway is Inet4Address }?.gateway?.hostAddress
 }
+
+/** The phone's own IPv4 addresses, so the app can warn before cutting off the device it runs on. */
+fun phoneAddresses(context: Context): Set<String> {
+    val cm = context.getSystemService(ConnectivityManager::class.java) ?: return emptySet()
+    val lp = cm.getLinkProperties(cm.activeNetwork) ?: return emptySet()
+    return lp.linkAddresses.mapNotNull { (it.address as? Inet4Address)?.hostAddress }.toSet()
+}

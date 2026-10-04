@@ -220,7 +220,10 @@ fun DeviceScreen(mac: String, onBack: () -> Unit) {
         }
     }
 
-    if (confirmBlock && dev != null) Confirm("Block ${dev.name}?", "It stays on your network but can't reach the internet until you allow it again.", "Block",
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val isPhone = dev?.ipv4 != null && dev.ipv4 in com.openwrtmgr.app.data.phoneAddresses(ctx)
+    if (confirmBlock && dev != null) Confirm(if (isPhone) "Block this phone?" else "Block ${dev.name}?",
+        if (isPhone) "This is the device you're using. Blocking it cuts off its internet, and you'd have to undo it from another device." else "It stays on your network but can't reach the internet until you allow it again.", "Block",
         onDismiss = { confirmBlock = false }) { ui.run("Blocking…", "Internet blocked for ${dev.name}", data::refresh) { r.setBlocked(dev.mac, dev.name, true) } }
 
     if (edit && dev != null) ReservationSheet(r, dev, onDismiss = { edit = false }) { data.refresh() }

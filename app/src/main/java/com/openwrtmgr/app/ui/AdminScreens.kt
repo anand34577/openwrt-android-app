@@ -55,7 +55,7 @@ private data class Settings(
     val routerTime: Long?, val crontab: String, val zones: Map<String, String>,
 )
 
-private val REBOOT_LINE = Regex("^(\\d{1,2}) (\\d{1,2}) \\* \\* ([*0-6]) (/sbin/)?reboot\\s*$", RegexOption.MULTILINE)
+private val REBOOT_LINE = Regex("^\\s*(\\d{1,2})\\s+(\\d{1,2})\\s+\\*\\s+\\*\\s+([*0-6])\\s+(\\S*/)?reboot\\b.*$", RegexOption.MULTILINE)
 
 private suspend fun Router.loadSettings(): Settings {
     val sys = uci("system")
@@ -97,7 +97,7 @@ fun SettingsScreen(onBack: () -> Unit) {
         item {
             val m = REBOOT_LINE.find(s.crontab)
             Panel(title = "Scheduled reboot", onClick = { sheet = "cron" }) {
-                KV("Schedule", m?.let { "${if (it.groupValues[3] == "*") "Daily" else dayName(it.groupValues[3])} at %02d:%02d".format(it.groupValues[2].toInt(), it.groupValues[1].toInt()) } ?: "Off")
+                KV("Schedule (tap to change)", m?.let { "${if (it.groupValues[3] == "*") "Daily" else dayName(it.groupValues[3])} at %02d:%02d".format(it.groupValues[2].toInt(), it.groupValues[1].toInt()) } ?: "Off")
             }
         }
         item {

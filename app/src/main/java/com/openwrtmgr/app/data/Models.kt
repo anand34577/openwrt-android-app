@@ -15,6 +15,7 @@ data class SysInfo(
     val memTotal: Long, val memAvailable: Long,
     val rootTotal: Long, val rootUsed: Long,
     val tmpTotal: Long, val tmpUsed: Long,
+    val swapTotal: Long = 0, val swapFree: Long = 0,
 ) {
     val memUsedPct get() = pct(memTotal - memAvailable, memTotal)
     val rootUsedPct get() = pct(rootUsed, rootTotal)
@@ -48,6 +49,7 @@ fun parseSysInfo(j: JsonObject): SysInfo {
         memTotal = total, memAvailable = avail,
         rootTotal = (root["total"].long() ?: 0) * 1024, rootUsed = (root["used"].long() ?: 0) * 1024,
         tmpTotal = (tmp["total"].long() ?: 0) * 1024, tmpUsed = (tmp["used"].long() ?: 0) * 1024,
+        swapTotal = j["swap"].obj()["total"].long() ?: 0, swapFree = j["swap"].obj()["free"].long() ?: 0,
     )
 }
 
