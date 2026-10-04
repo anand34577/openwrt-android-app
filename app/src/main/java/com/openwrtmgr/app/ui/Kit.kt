@@ -80,6 +80,8 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.takeOrElse
 import androidx.compose.ui.graphics.Path
@@ -178,7 +180,7 @@ object Ops {
     val warn get() = palette.warn
     val bad get() = palette.bad
     val blue get() = palette.blue
-    val onAccent get() = if (palette.dark) palette.bg else Color.White
+    val onAccent get() = onAccentFor(palette)
 }
 
 /** Vivid, theme-independent feature colours for icon tiles. */
@@ -190,12 +192,25 @@ object Tints {
     fun pick(key: String) = cycle[kotlin.math.abs(key.hashCode()) % cycle.size]
 }
 
-val BrandGradient = Brush.linearGradient(listOf(Color(0xFF2456F5), Color(0xFF6B4DFF), Color(0xFF9B5CFF)))
+/** Text/icon colour with the better contrast on [Palette.accent]: white or the theme's own darkest ink. */
+fun onAccentFor(p: Palette): Color {
+    val dark = if (p.dark) p.bg else p.text
+    fun contrast(a: Color, b: Color) = (maxOf(a.luminance(), b.luminance()) + 0.05f) / (minOf(a.luminance(), b.luminance()) + 0.05f)
+    return if (contrast(p.accent, Color.White) >= contrast(p.accent, dark)) Color.White else dark
+}
+
+/** Hero gradient built from the current theme. Dark themes sink the accents into the background so white text stays readable. */
+val BrandGradient: Brush get() {
+    val p = Ops.palette
+    val a = if (p.dark) lerp(p.accent, p.bg, 0.55f) else p.accent
+    val b = if (p.dark) lerp(p.violet, p.bg, 0.55f) else p.violet
+    return Brush.linearGradient(listOf(a, lerp(a, b, 0.5f), b))
+}
 
 val Mono = FontFamily.Monospace
 
 private fun schemeFor(p: Palette): ColorScheme {
-    val onAccent = if (p.dark) p.bg else Color.White
+    val onAccent = onAccentFor(p)
     val base = if (p.dark) darkColorScheme() else lightColorScheme()
     return base.copy(
         primary = p.accent, onPrimary = onAccent,
@@ -209,6 +224,10 @@ private fun schemeFor(p: Palette): ColorScheme {
         surfaceVariant = p.raised, onSurfaceVariant = p.muted,
         surfaceContainerLowest = p.bg, surfaceContainerLow = p.panel, surfaceContainer = p.panel,
         surfaceContainerHigh = p.raised, surfaceContainerHighest = p.lineStrong,
+        // Every remaining M3 slot defaults to the stock purple/grey scheme, which shows up as washed-out
+        // tints on dark themes (elevation overlay uses surfaceTint = primary).
+        surfaceTint = Color.Transparent, surfaceDim = p.bg, surfaceBright = p.raised,
+        tertiaryContainer = p.ok.copy(alpha = 0.18f).compositeOver(p.panel), onTertiaryContainer = p.text,
         outline = p.lineStrong, outlineVariant = p.line,
         inverseSurface = p.text, inverseOnSurface = p.bg, inversePrimary = p.accent,
         scrim = Color(0xCC000000),
@@ -397,7 +416,7 @@ fun Divider() = Box(Modifier.fillMaxWidth().height(1.dp).background(Ops.line.cop
 fun IconTile(icon: ImageVector, tint: Color = Ops.accent, size: Dp = 42.dp) {
     Box(
         Modifier.size(size).clip(RoundedCornerShape(size * 0.32f))
-            .background(Brush.linearGradient(listOf(tint, tint.copy(alpha = 0.72f).compositeOver(Color.White)))),
+            .background(Brush.linearGradient(listOf(tint, if (Ops.palette.dark) lerp(tint, Color.Black, 0.28f) else tint.copy(alpha = 0.72f).compositeOver(Color.White)))),
         contentAlignment = Alignment.Center,
     ) { Icon(icon, null, tint = Color.White, modifier = Modifier.size(size * 0.54f)) }
 }
@@ -411,7 +430,7 @@ fun Avatar(icon: ImageVector, key: String, size: Dp = 44.dp, dim: Boolean = fals
         Color(0xFF3F9E3B) to Color(0xFF8FD67A), Color(0xFF9A6A12) to Color(0xFFE6B84E),
     )
     val (a, b) = palette[kotlin.math.abs(key.hashCode()) % palette.size]
-    Box(Modifier.size(size).clip(CircleShape).background(Brush.linearGradient(listOf(a, b))).alpha(if (dim) 0.45f else 1f), contentAlignment = Alignment.Center) {
+    Box(Modifier.size(size).clip(CircleShape).background(Brush.linearGradient(listOf(a, if (Ops.palette.dark) lerp(a, Color.Black, 0.28f) else b))).alpha(if (dim) 0.45f else 1f), contentAlignment = Alignment.Center) {
         Icon(icon, null, Modifier.size(size * 0.5f), tint = Color.White)
     }
 }

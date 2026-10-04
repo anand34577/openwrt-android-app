@@ -193,6 +193,7 @@ fun OverviewScreen(onSwitchRouter: () -> Unit) {
                     Spacer(Modifier.height(6.dp))
                     StorageRow("Flash (overlay)", info.rootUsed, info.rootTotal)
                     StorageRow("RAM disk (/tmp)", info.tmpUsed, info.tmpTotal)
+                    StorageRow("Swap", info.swapTotal - info.swapFree, info.swapTotal)
                     vm.board?.let { b ->
                         Spacer(Modifier.height(6.dp)); Divider(); Spacer(Modifier.height(6.dp))
                         KV("Firmware", b.release)

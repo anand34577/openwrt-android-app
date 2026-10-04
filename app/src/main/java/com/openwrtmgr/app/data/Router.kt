@@ -62,6 +62,7 @@ class Router(val profile: RouterProfile, val ubus: Ubus, private val onPasswordC
             ubus.call("uci", "apply", args("rollback" to rollback, "timeout" to ROLLBACK_SECONDS))
         } catch (e: RouterException) {
             if (e.code == Ubus.PERMISSION_DENIED) throw RouterException("Another apply is in progress on the router (e.g. from LuCI). Try again in ${ROLLBACK_SECONDS}s.")
+            changes.keys.forEach { revert(it) } // drop the staged edits so they don't leak into the next apply
             throw e
         }
         if (rollback) {
@@ -232,11 +233,15 @@ class Router(val profile: RouterProfile, val ubus: Ubus, private val onPasswordC
     suspend fun saveIface(section: String, values: Map<String, Any?>) { uciSet("network", section, values); apply() }
 
     suspend fun saveUci(config: String, section: String?, type: String, values: Map<String, Any?>) {
-        if (section == null) uciAdd(config, type, values) else uciSet(config, section, values)
-        apply()
+        try {
+            if (section == null) uciAdd(config, type, values) else uciSet(config, section, values)
+            apply()
+        } catch (e: RouterException) { revert(config); throw e }
     }
 
-    suspend fun deleteUci(config: String, section: String) { uciDelete(config, section); apply() }
+    suspend fun deleteUci(config: String, section: String) {
+        try { uciDelete(config, section); apply() } catch (e: RouterException) { revert(config); throw e }
+    }
 
     // ---------- system ----------
 
@@ -297,6 +302,10 @@ class Router(val profile: RouterProfile, val ubus: Ubus, private val onPasswordC
     suspend fun backup(): ByteArray = ubus.downloadBackup()
 
     suspend fun uploadBackup(bytes: ByteArray): String {
+        // Cheap local check first: gzip magic + the whole stream must inflate, so a truncated file never reaches the router.
+        val gz = bytes.size > 2 && bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte() &&
+            runCatching { java.util.zip.GZIPInputStream(bytes.inputStream()).use { val buf = ByteArray(8192); while (it.read(buf) >= 0) { } } }.isSuccess
+        if (!gz) throw RouterException("That file isn't a valid gzip backup archive.")
         ubus.upload("/tmp/backup.tar.gz", bytes)
         val list = exec("/bin/tar", "-tzf", "/tmp/backup.tar.gz")
         if (list.code != 0) {
