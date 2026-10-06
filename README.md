@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/social/hero.png" alt="OpenWrt Manager: run your router from your phone"></p>
+
 # OpenWrt Manager
 
 A native Android app for looking after your OpenWrt router from your phone.
